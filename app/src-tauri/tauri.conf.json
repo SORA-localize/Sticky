@@ -10,13 +10,21 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
+        "label": "main",
         "title": "sticky",
-        "width": 800,
-        "height": 600,
+        "width": 1440,
+        "height": 900,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": true,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "decorations": false,
+        "visibleOnAllWorkspaces": true,
+        "skipTaskbar": true,
+        "acceptFirstMouse": true
       }
     ],
     "security": {

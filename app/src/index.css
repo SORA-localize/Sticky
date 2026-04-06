@@ -40,9 +40,7 @@ body,
 
 body {
   margin: 0;
-  background:
-    radial-gradient(circle at top left, rgba(255, 255, 255, 0.75), transparent 28%),
-    linear-gradient(180deg, #f6f4ef 0%, #efe9df 100%);
+  background: transparent;
 }
 
 #root {
