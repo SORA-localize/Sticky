@@ -92,6 +92,12 @@ type ResizeInteraction = {
 
 type Interaction = DragInteraction | ResizeInteraction
 
+type ContextMenu = {
+  sessionId: string
+  x: number
+  y: number
+} | null
+
 function nextId(prefix: string, current: number) {
   return `${prefix}-${current.toString(36)}`
 }
@@ -176,6 +182,8 @@ function App() {
   const [isSessionPickerVisible, setIsSessionPickerVisible] = useState(false)
   const [limitWarning, setLimitWarning] = useState<'session' | 'memo' | null>(null)
   const limitWarningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [contextMenu, setContextMenu] = useState<ContextMenu>(null)
+  const contextMenuRef = useRef<HTMLElement | null>(null)
 
   const idCounterRef = useRef({ session: 1, memo: 1 })
   const editorRefs = useRef<Record<string, HTMLTextAreaElement | null>>({})
@@ -197,6 +205,25 @@ function App() {
       setLimitWarning(null)
       limitWarningTimerRef.current = null
     }, 900)
+  }
+
+  const handleMemoContextMenu =
+    (sessionId: string) => (event: React.MouseEvent<HTMLElement>) => {
+      event.preventDefault()
+      event.stopPropagation()
+      setIsSessionPickerVisible(false)
+      setContextMenu({ sessionId, x: event.clientX, y: event.clientY })
+    }
+
+  const handleSelectSession = (sessionId: string) => {
+    setSessions((currentSessions) =>
+      clearSelections(currentSessions).map((session) =>
+        session.id !== sessionId
+          ? session
+          : { ...session, selectionState: 'session_selected' },
+      ),
+    )
+    setContextMenu(null)
   }
 
   const createMemo = (slotIndex: number, selected = false): Memo => {
@@ -652,6 +679,10 @@ function App() {
 
       if (event.key === 'Escape') {
         event.preventDefault()
+        if (contextMenuRef.current !== null) {
+          setContextMenu(null)
+          return
+        }
         setSessions((currentSessions) => clearSelections(currentSessions))
       }
 
@@ -684,6 +715,12 @@ function App() {
 
   const handleMemoPointerDown =
     (sessionId: string, memoId: string) => (event: React.PointerEvent<HTMLElement>) => {
+      if (event.button !== 0) {
+        return
+      }
+
+      setContextMenu(null)
+
       const editingEntry = getEditingMemo(sessions)
       if (editingEntry && editingEntry.memo.id !== memoId) {
         commitEditorValue(editingEntry.session.id, editingEntry.memo.id)
@@ -771,10 +808,14 @@ function App() {
       card?.contains(event.target as Node),
     )
     const clickedInsidePicker = sessionPickerRef.current?.contains(event.target as Node) ?? false
+    const clickedInsideContextMenu =
+      contextMenuRef.current?.contains(event.target as Node) ?? false
 
-    if (clickedInsideMemo || clickedInsidePicker) {
+    if (clickedInsideMemo || clickedInsidePicker || clickedInsideContextMenu) {
       return
     }
+
+    setContextMenu(null)
 
     const editingEntry = getEditingMemo(sessions)
     if (editingEntry) {
@@ -840,6 +881,8 @@ function App() {
             .map((memo) => {
               const isSelected = memo.uiState === 'memo_selected' || memo.uiState === 'editing'
               const isEditing = memo.uiState === 'editing'
+              const isSessionSelected = session.selectionState === 'session_selected'
+              const showRing = isSelected || isSessionSelected
 
               return (
                 <article
@@ -847,7 +890,7 @@ function App() {
                   ref={(node) => {
                     cardRefs.current[getMemoIdentity(session.id, memo.id)] = node
                   }}
-                  className={`memo-card ${isSelected ? 'memo-card--selected' : ''} ${isEditing ? 'memo-card--editing' : ''} ${limitWarning ? 'memo-card--limit-warning' : ''}`}
+                  className={`memo-card ${isSelected ? 'memo-card--selected' : ''} ${isSessionSelected ? 'memo-card--session-selected' : ''} ${isEditing ? 'memo-card--editing' : ''} ${limitWarning ? 'memo-card--limit-warning' : ''}`}
                   style={{
                     transform: `translate(${memo.position.x}px, ${memo.position.y}px)`,
                     width: `${memo.size.width}px`,
@@ -857,8 +900,9 @@ function App() {
                   onPointerDown={handleMemoPointerDown(session.id, memo.id)}
                   onClick={handleMemoClick(session.id, memo.id)}
                   onDoubleClick={handleMemoDoubleClick(session.id, memo.id)}
+                  onContextMenu={handleMemoContextMenu(session.id)}
                 >
-                  {isSelected ? <div className="memo-card__ring" /> : null}
+                  {showRing ? <div className="memo-card__ring" /> : null}
 
                   <header className="memo-card__meta">
                     <span className="memo-card__badge">
@@ -981,6 +1025,44 @@ function App() {
               )
             }),
         )}
+
+      {contextMenu ? (() => {
+        const MENU_W = 192
+        const MENU_H = 112
+        const x = Math.min(contextMenu.x, window.innerWidth - MENU_W - 8)
+        const y = Math.min(contextMenu.y, window.innerHeight - MENU_H - 8)
+        return (
+          <nav
+            ref={contextMenuRef}
+            className="context-menu"
+            style={{ left: x, top: y }}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <button
+              className="context-menu__item"
+              type="button"
+              onClick={() => handleSelectSession(contextMenu.sessionId)}
+            >
+              このセッションを選択
+            </button>
+            <hr className="context-menu__separator" />
+            <button
+              className="context-menu__item"
+              type="button"
+              onClick={() => setContextMenu(null)}
+            >
+              このセッションを閉じる
+            </button>
+            <button
+              className="context-menu__item context-menu__item--danger"
+              type="button"
+              onClick={() => setContextMenu(null)}
+            >
+              このセッションを削除...
+            </button>
+          </nav>
+        )
+      })() : null}
 
       {limitWarning ? (
         <p className="limit-warning-badge" aria-live="assertive">
