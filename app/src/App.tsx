@@ -226,6 +226,21 @@ function App() {
     setContextMenu(null)
   }
 
+  const handleCloseSession = (sessionId: string) => {
+    setSessions((currentSessions) =>
+      clearSelections(currentSessions).map((session) =>
+        session.id !== sessionId
+          ? session
+          : {
+              ...session,
+              isOpen: false,
+              memos: session.memos.map((memo) => ({ ...memo, isVisible: false, uiState: 'idle' })),
+            },
+      ),
+    )
+    setContextMenu(null)
+  }
+
   const createMemo = (slotIndex: number, selected = false): Memo => {
     const memoId = nextId('memo', idCounterRef.current.memo++)
     draftContentRef.current[memoId] = ''
@@ -363,6 +378,7 @@ function App() {
     const unlisten = Promise.all([
       listen('session://open-single', () => {
         setIsSessionPickerVisible(false)
+        setContextMenu(null)
         setSessions((currentSessions) => {
           const nextSessions = clearSelections(currentSessions)
           const result = createSession(1, nextSessions)
@@ -686,6 +702,18 @@ function App() {
         setSessions((currentSessions) => clearSelections(currentSessions))
       }
 
+      if (selectedEntry && event.key === 'p') {
+        event.preventDefault()
+        setSessions((currentSessions) =>
+          clearSelections(currentSessions).map((session) =>
+            session.id !== selectedEntry.session.id
+              ? session
+              : { ...session, selectionState: 'session_selected' },
+          ),
+        )
+        return
+      }
+
       if (selectedEntry && event.key === 'Enter') {
         event.preventDefault()
         setSessions((currentSessions) =>
@@ -992,8 +1020,9 @@ function App() {
 
                   {import.meta.env.DEV ? (
                     <footer className="memo-card__footer">
-                      <span>click: select / double click: edit</span>
-                      <span>Cmd + S: save / Cmd + Enter: save and close</span>
+                      <span>click: select / dbl: edit / right-click: session menu</span>
+                      <span>p: select session / Esc: deselect</span>
+                      <span>Cmd+S: save+deselect / Cmd+Enter: save+close</span>
                     </footer>
                   ) : null}
 
@@ -1049,14 +1078,14 @@ function App() {
             <button
               className="context-menu__item"
               type="button"
-              onClick={() => setContextMenu(null)}
+              onClick={() => handleCloseSession(contextMenu.sessionId)}
             >
               このセッションを閉じる
             </button>
             <button
-              className="context-menu__item context-menu__item--danger"
+              className="context-menu__item context-menu__item--danger context-menu__item--disabled"
               type="button"
-              onClick={() => setContextMenu(null)}
+              disabled
             >
               このセッションを削除...
             </button>
