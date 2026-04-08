@@ -2,7 +2,7 @@
 
 ## 1. 対象フェーズ
 - マスタープラン対応: `Phase 3: セッション操作の成立`
-- 主目的: `1枚メモで成立した基本操作` を、`複数メモ / 複数セッション` 前提のデスクトップ操作へ拡張する
+- 主目的: 複数メモ / 複数セッションを前提とした sticky 独自の操作モデルを成立させる
 
 ---
 
@@ -17,388 +17,343 @@
 - `操作一覧表.md`
 - `画面ワイヤー仕様.md`
 - `デザインシステム初版.md`
-- `phase-2-desktop-memo-minimum.md`
 - `疎通確認結果.md`
 
 本フェーズでは、保存基盤や autosave を広げず、`セッション生成 / セッション選択 / セッション単位操作` をメモリ上で成立させる。
 
 ---
 
-## 3. 既存実装の類似参照
-今回の正解パターンに近い既存ファイルは以下。
+## 3. 今回触る関連ファイル
 
-- `app/src/App.tsx`
-  - 単一メモ UI、選択/編集/移動/リサイズ、明示保存、再表示の現在実装
-- `app/src/App.css`
-  - メモカード、選択リング、リサイズハンドルの現行表現
-- `app/src/index.css`
-  - セッション色を含むデザイントークン
-- `app/src-tauri/src/lib.rs`
-  - グローバルショートカット、Tauri -> React イベント送出
+本フェーズ全体で触る候補は以下。ただし実装時は `1サブフェーズ = 最大3ファイル` を守る。
 
-今回の方針:
-- `Phase 2` の単一メモ state を壊さず、`Session[]` 配下へ持ち上げる
-- 保存は引き続きメモリ上で扱い、SQLite には入れない
-- 管理画面や autosave は Phase 4 / 5 に持ち越す
-- デスクトップ側のショートカットと右クリックメニューを、本番仕様に近い形へ寄せる
+| ファイル | 用途 |
+|---|---|
+| `app/src/App.tsx` | 選択モデル・state・操作ハンドラ・JSX |
+| `app/src/App.css` | 新規スタイル |
+| `app/src-tauri/src/lib.rs` | メニューバー導線のみ (Phase 3-5) |
+| `app/src-tauri/tauri.conf.json` | 必要時のみ (Phase 3-5) |
+
+触らないもの:
+- SQLite / DBアクセス層
+- 管理画面本体UI
+- autosave / cleanup 実装
 
 ---
 
 ## 4. 問題一覧（Issue List）
 
-### S-01: 現在の state が単一メモ前提で、複数セッションを表現できない
-- `content / isDirty / position / size / uiState` が単一ノート用であり、複数メモやセッション単位選択へ拡張できない
+### 完了済み Issues（Phase 3-1, 3-2）
 
-### U-01: `Cmd + Shift + 1` が「単一メモ再表示」の暫定挙動に留まっている
-- 1枚セッション開始ショートカットとしては、実際の新規セッション生成になっていない
+| ID | 概要 | 対応フェーズ | 状態 |
+|---|---|---|---|
+| S-01 | 単一メモ state を Session[] 構造へ持ち上げ | 3-1 | ✅ 完了 |
+| U-01 | `Cmd + Option + Enter` で1枚セッション新規生成 | 3-1 | ✅ 完了 |
+| U-02 | `Cmd + Option + N` → 枚数選択UI → 複数枚生成 | 3-1 | ✅ 完了 |
+| U-03 | color_slot の最小番号割り当て | 3-1 | ✅ 完了 |
+| U-07 | 上限 5セッション / 15メモ の到達警告 | 3-1 | ✅ 完了 |
+| U-08 | 15スロット前詰め配置 / 80px重なりレイアウト | 3-1 | ✅ 完了 |
+| S-02 | session_selected と memo_selected の分離 | 3-2 | ✅ 完了 |
+| U-04 | 右クリックメニュー（セッション文脈） | 3-2 | ✅ 完了 |
 
-### U-02: 複数枚セッション開始ショートカットが macOS 標準ショートカットと競合しやすい
-- `Cmd + Shift + 数字` は既存アプリやOS標準ショートカットと衝突しやすく、デフォルトショートカットとして不適切
+### 未完了 Issues（Phase 3-3〜3-5 対象）
 
-### U-03: セッション色の表示と `color_slot` 割り当てロジックが未実装
-- 仕様では `開いているセッションが使っていない最小 color_slot` を割り当てるが、コードに存在しない
+#### A-01: 選択状態の分散管理 → グローバル Selection 型への移行
 
-### S-02: セッション選択状態とメモ選択状態の分離が未実装
-- 現在は `memo_selected` しかなく、右クリックメニュー経由の `session_selected` がない
+現状:
+- `Session.selectionState: 'idle' | 'session_selected'`
+- `Memo.uiState: 'idle' | 'memo_selected' | 'editing'`
+- の2箇所に選択状態が分散しており、コマンド発行時の「何が選ばれているか」の判定が煩雑になる
 
-### U-04: 右クリックメニューが未実装
-- `このセッションを選択 / このセッションを削除... / このセッションを閉じる` の導線がない
+目標:
+```ts
+type Selection =
+  | { type: 'none' }
+  | { type: 'memo';    sessionId: string; memoId: string }
+  | { type: 'editing'; sessionId: string; memoId: string }
+  | { type: 'session'; sessionId: string }
+```
+- 単一の `selection` state としてトップレベルに持つ
+- `Session.selectionState` / `Memo.uiState` は削除し、`selection` から導出する
+- コマンドハンドラ（Cmd+S 等）は `selection` の type を switch するだけで対象が確定する
 
-### U-07: 上限到達時の作成拒否導線が未実装
-- 仕様では `5セッション / 15メモ` 超過時に新規作成を拒否するが、現状の計画では作成拒否そのものの実装位置が未定義
+#### U-09: Pin 機能の実装と `p` キーバインドの修正
 
-### U-08: 15スロットの前詰め配置が実装と体感で一致していない
-- 本来は `1〜15` の空きスロットへ前詰め配置されるべきだが、現実装では移動後の見た目が仕様どおりに感じられない
+現状バグ:
+- `p` キーが誤って `session_selected` への遷移にバインドされている（要修正）
 
-### U-05: セッション単位の一括移動が未実装
-- セッション選択状態に入っても、全メモをまとめて動かす処理が存在しない
+実装内容:
+- `Memo` に `isPinned: boolean` フィールドを追加
+- `memo_selected` または `editing` 状態のメモに対して `p` キーで `isPinned` をトグル
+- 右クリックメニューに `このメモを固定 / 固定を解除` を追加（セッション文脈メニューとは別に、選択メモに対する項目として扱う）
+- 固定メモは将来の auto close 対象外にする（Phase 4 で保証）
 
-### D-01: セッション単位の閉じる / 削除が未実装
-- `isVisible` は単一メモでしか扱っておらず、セッション単位の open/close や delete 確認導線がない
+視覚表現:
+- 固定中は画鋲アイコンまたは `📌` 相当の小バッジを右上に表示（シンプルな実装でよい）
 
-### U-06: 最小メニューバー導線が未実装
-- `New 1-Note Session / Open Home / Open Trash / Open Settings / Quit sticky` のうち、デスクトップ生成に関わる最小導線がまだない
+#### S-03: セッション単位の一括操作
 
-### K-01: `Phase 2` の単体操作と `Phase 3` のセッション操作が衝突する可能性がある
-- メモ選択、右クリック、ドラッグ、`Cmd + S` / `Cmd + Enter` が、単体操作とセッション操作の両方で矛盾なく動く必要がある
+対象操作:
+- `session_selected` 状態でのドラッグ: セッション内全メモを一括移動
+- `Cmd + S`: 選択セッション内の `isDirty` メモを更新保存（Phase 3 ではメモリ上）
+- `Cmd + Enter`: 選択セッションを保存して閉じる（`handleCloseSession` 呼び出し）
+- `このセッションを閉じる`: 右クリックメニューから（既存 `handleCloseSession` で実装済みだが Gate 確認要）
 
-### K-02: auto close の帰属が未確定
-- マスタープランでは Phase 3 に記載があるが、`last_active_at` と保存基盤に依存するため、このフェーズで扱うと設計が濁る
+補足:
+- A-01 の移行完了後に実装する（グローバル Selection が確定していないと switch が書けない）
+- 一括ドラッグのアンカー: ドラッグ開始時のポインタ位置と各メモの相対オフセットを記録
 
----
-
-## 5. フェーズ内サブフェーズ
-本フェーズは、主目的を維持したまま以下の小段階に分ける。
-
-### Phase 3-1: セッション state への持ち上げ
-対応Issue:
-- S-01
-- U-01
-- U-02
-- U-03
-- U-07
-- U-08
-
-目的:
-- 単一メモ state を、`Session[] -> Memo[]` のメモリ上構造へ置き換える
-- `Cmd + Option + Enter` を `1枚セッション新規生成` にする
-- `Cmd + Option + N` で枚数選択UIを開き、そこから指定枚数セッションを生成できるようにする
-- 15スロットを `空き最小番号からの前詰め配置` として再確認し、実装を一致させる
-
-対象:
-- `app/src/App.tsx`
-- 必要なら `app/src/lib` 配下に新規1ファイル
-- 必要なら `app/src-tauri/src/lib.rs`
-
-成果:
-- メモリ上の `Session[]` 構造
-- 各 Session に `id / colorSlot / isOpen / memos[]` を持つ
-- 上限 `5セッション / 15メモ` を判定する純関数
-- 各 Memo に `id / content / isDirty / uiState / position / size / isVisible` を持つ
-- `Cmd + Option + Enter` で1枚セッション新規生成
-- `Cmd + Option + N` で枚数選択UIを開き、選択後に複数枚セッション新規生成
-- `color_slot` を `開いているセッションが使っていない最小番号` から割り当てる
-- 15スロットが `空き最小番号からの前詰め` で再利用される
-- 上限到達時は新規生成を行わない
-
-Gate:
-- `Cmd + Option + Enter` で1枚セッションを新規生成できる
-- `Cmd + Option + N` から 2枚以上のセッションを生成できる
-- 生成された各セッションに `colorSlot` が重複なく割り当たる
-- 新規メモは常に空いている最小番号スロットへ配置される
-- メモ移動後に空いたスロットが次の新規生成で再利用される
-- 上限 `5セッション / 15メモ` に達していない範囲で生成できる
-- 上限到達時は新規生成されない
-
-### Phase 3-2: セッション選択と右クリックメニュー
-対応Issue:
-- S-02
-- U-04
-- K-01
-
-目的:
-- 右クリックメニューから `session_selected` に入る導線を実装する
-- セッション文脈の操作対象を明確にする
+#### D-01: 削除確認モーダル
 
 対象:
-- `app/src/App.tsx`
-- `app/src/App.css`
-- 必要なら `app/src/lib` 配下に新規1ファイル
+- `セッション削除確認`: 右クリック `このセッションを削除...` または `Delete` キー（session 選択中）
+- `メモ削除確認`: `Delete` キー（memo 選択中）
 
-成果:
-- `memo_selected` と `session_selected` の分離
-- web コンポーネントとしての右クリックメニュー実装
-- メニュー項目:
-  - `このセッションを選択`
-  - `このセッションを削除...`
-  - `このセッションを閉じる`
-- セッション選択時の視覚表現
+実装内容:
+- トップレベル state: `deleteConfirm: { type: 'session'; sessionId: string } | { type: 'memo'; sessionId: string; memoId: string } | null`
+- モーダル JSX: 画面中央固定、2ボタン（削除 / キャンセル）
+- 削除実行: セッション → `isOpen: false` + 全メモ `isVisible: false`（Phase 4 でゴミ箱へ）
+- Esc / キャンセルボタンでモーダルを閉じる
 
-Gate:
-- メモ右クリックでセッション文脈メニューが開く
-- `このセッションを選択` で `session_selected` に入る
-- セッション選択中はセッション内全メモが視覚的に区別される
-- 同一セッション内メモのシングルクリックで `memo_selected` に戻れる
+#### U-06: 最小メニューバー導線
 
-### Phase 3-3: セッション一括移動と単位操作
-対応Issue:
-- U-05
-- D-01
-- K-01
-
-目的:
-- セッション選択状態での一括移動を成立させる
-- セッション単位の閉じると削除確認の最小フローを成立させる
-
-対象:
-- `app/src/App.tsx`
-- `app/src/App.css`
-- 必要なら `app/src/lib` 配下に新規1ファイル
-
-成果:
-- セッション選択中の全メモ一括移動
-- `Cmd + S` のセッション単位保存
-- `Cmd + Enter` のセッション単位保存して閉じる
-- `Delete` によるセッション削除確認の最小実装
-- `このセッションを閉じる` の動作
-- 削除確認対象を保持するグローバルモーダル state
-
-Gate:
-- セッション選択中にドラッグで全メモをまとめて移動できる
-- セッション選択中に `Cmd + S` で対象セッション内の保存対象メモを更新保存できる
-- セッション選択中に `Cmd + Enter` で対象セッションを保存して閉じられる
-- `このセッションを閉じる` で対象セッションのみデスクトップから非表示にできる
-- `Delete` または `このセッションを削除...` で削除確認に入れる
-
-### Phase 3-4: 最小メニューバー導線
-対応Issue:
-- U-06
-- K-01
-
-目的:
-- Phase 5 着手前に、最低限のメニューバー導線を成立させる
-
-対象:
-- `app/src-tauri/src/lib.rs`
-- 必要なら `app/src-tauri/tauri.conf.json`
-- 必要なら `app/src/App.tsx`
-
-成果:
+対象項目（仕様書 §9.1）:
 - `New 1-Note Session`
-- `Open Home`
-- `Open Trash`
-- `Open Settings`
+- `Open Home`（スタブ: ログ or alert）
+- `Open Trash`（スタブ）
+- `Open Settings`（スタブ）
+- セパレーター
 - `Quit sticky`
-の最小導線
 
-Gate:
-- メニューバーから `New 1-Note Session` を実行できる
-- `Open Home / Open Trash / Open Settings` のイベント導線が存在する
-- `Quit sticky` が動く
+実装:
+- Tauri の `tauri::menu` API でメニューバーを構築
+- `New 1-Note Session` → `session://open-single` イベント送出（既存と同じ）
+- `Quit sticky` → `AppHandle::exit(0)` または `process::exit`
+
+#### K-01: `p` キーバインド正規化（U-09 に統合）
+誤バインドの除去と正しい pin トグル実装。U-09 で対処。
+
+#### K-02: auto close の帰属（Phase 4 へ持ち越し）
+`last_active_at` と保存基盤に依存するため、Phase 3 では実装しない。
+Phase 3 では `isPinned` を持つことで将来の対象外フラグを準備するにとどめる。
 
 ---
 
-## 6. 今回触る関連ファイル
-本フェーズ全体で触る候補は以下。  
-ただし、実装時は `1サブフェーズ = 最大3ファイル` を守る。
+## 5. サブフェーズ
 
+### Phase 3-1: セッション state への持ち上げ ✅ 完了
+対応Issue: S-01, U-01, U-02, U-03, U-07, U-08
+
+### Phase 3-2: セッション選択と右クリックメニュー ✅ 完了
+対応Issue: S-02, U-04
+
+詳細は `plans/phase-3-1c-slot-and-warning.md` / `plans/phase-3-2-session-selection.md` を参照。
+
+---
+
+### Phase 3-3: グローバル Selection 移行 + Pin 機能
+対応Issue: A-01, U-09
+
+主目的: 選択状態の一本化と `p` キーの正規化
+
+触るファイル:
+- `app/src/App.tsx`（Selection 型定義・state・全ハンドラ更新、isPinned 追加）
+- `app/src/App.css`（Pin バッジスタイル）
+
+実装ステップ:
+1. `Selection` 型を定義し `const [selection, setSelection] = useState<Selection>({ type: 'none' })` を追加
+2. `Session.selectionState` を削除、`Memo.uiState` を削除
+3. 各ハンドラを `selection` ベースに書き直す（`handleMemoClick`, `handleMemoDoubleClick`, `handleSelectSession`, `clearSelections` 等）
+4. JSX のクラス判定を `selection` から導出するヘルパー関数に集約
+5. `p` キーのバインドを session_selected → isPinned トグルへ修正
+6. `Memo` に `isPinned: boolean` を追加、右クリックメニューに pin 項目追加
+7. Pin バッジの視覚表現を追加
+
+Gate 条件:
+- `selection.type` が `none / memo / editing / session` の4種類のみ存在する
+- `p` キーが `memo` または `editing` 状態のとき `isPinned` をトグルする
+- `p` キーが `session` / `none` 状態では何も起きない
+- 固定中メモに視覚バッジが表示される
+- Phase 3-2 の右クリックメニュー動作を壊していない
+- Phase 3-1 の全 Gate を壊していない
+
+---
+
+### Phase 3-4: セッション一括操作 + 削除確認モーダル
+対応Issue: S-03, D-01
+
+前提: Phase 3-3 完了後（グローバル Selection が確定していること）
+
+主目的: セッション選択状態からの一括操作と削除フローの最小成立
+
+触るファイル:
 - `app/src/App.tsx`
 - `app/src/App.css`
-- `app/src/index.css`
-- `app/src/lib/*`（必要時のみ新規1ファイル）
+
+実装ステップ（S-03）:
+1. `selection.type === 'session'` 中のポインターダウンでアンカーを記録
+2. ポインタームーブで全メモの position を delta 分だけ更新
+3. `Cmd + S` ハンドラを `selection.type` で switch（session → 全 isDirty メモを保存、memo → 対象メモのみ）
+4. `Cmd + Enter` ハンドラを同様に switch（session → handleCloseSession 呼び出し）
+
+実装ステップ（D-01）:
+1. `deleteConfirm` state を追加
+2. `Delete` キーハンドラで `selection.type` に応じてモーダルを開く
+3. 右クリック `このセッションを削除...` で `deleteConfirm` をセット
+4. モーダル JSX を追加（position: fixed, 画面中央）
+5. 削除確定: セッション → `isOpen: false` + メモ全体 `isVisible: false`
+
+Gate 条件:
+- `session_selected` 状態でドラッグするとセッション内全メモがまとめて動く
+- `Cmd + S` がセッション選択中はセッション内全 isDirty メモを対象にする
+- `Cmd + S` がメモ選択中は対象メモのみを対象にする
+- `Cmd + Enter` がセッション選択中はセッションを閉じる
+- `Delete` がセッション選択中は削除確認モーダルを開く
+- `Delete` がメモ選択中は削除確認モーダルを開く（メモ対象）
+- `このセッションを削除...` で削除確認に入れる
+- Esc / キャンセルでモーダルを閉じる（選択状態は維持）
+- Phase 3-3 の全 Gate を壊していない
+
+---
+
+### Phase 3-5: 最小メニューバー導線
+対応Issue: U-06
+
+前提: Phase 3-4 完了後
+
+主目的: macOS メニューバーから sticky の主要導線を呼べるようにする
+
+触るファイル:
 - `app/src-tauri/src/lib.rs`
 - `app/src-tauri/tauri.conf.json`（必要時のみ）
 
-触らないもの:
-- SQLite / DBアクセス層全般
-- 管理画面本体UI
-- autosave / cleanup 実装
+実装ステップ:
+1. `tauri::menu` で `New 1-Note Session / Open Home / Open Trash / Open Settings / Quit sticky` を構成
+2. `New 1-Note Session` → `session://open-single` を emit（既存イベントと同一）
+3. `Open Home / Trash / Settings` → 現時点ではスタブ（ログ出力または alert）
+4. `Quit sticky` → `app.exit(0)`
 
-理由:
-- このフェーズの主目的は `デスクトップ上のセッション操作` であり、保存基盤や管理画面を同時に広げる段階ではない
-
----
-
-## 7. 設計方針
-
-### 7.1 state の分離
-このフェーズでは、以下の責務分離を守る。
-
-- `Session`
-  - `id`
-  - `colorSlot`
-  - `isOpen`
-  - `selectionState`: `idle | session_selected`
-  - `memos`
-- `Memo`
-  - `id`
-  - `content`
-  - `uiState`: `idle | memo_selected | editing`
-  - `isVisible`
-  - `isDirty`
-  - `position`
-  - `size`
-- `DeleteConfirmState`
-  - `targetType`: `session | memo | null`
-  - `targetSessionId`
-  - `targetMemoId`
-
-補足:
-- `session_selected` は Session 側にのみ存在させる
-- `memo_selected / editing` は Memo 側にのみ存在させる
-- 同一セッション内で `session_selected` と `memo_selected` が同時に生きないよう遷移を一本化する
-- `delete_confirm` は Session / Memo の enum に入れず、モーダル専用のグローバル state として持つ
-- アクティブな Session / Memo は `sessions` 配列の走査で特定し、派生した `activeSessionId` や `activeMemoId` は別 state に持たない
-
-### 7.2 保存の扱い
-- このフェーズでも保存はメモリ上の更新保存に留める
-- `Cmd + S` と `Cmd + Enter` は、選択対象が Session か Memo かで作用範囲だけ切り替える
-- DB永続化・autosave・title 再生成・cleanup は Phase 4 に持ち越す
-
-### 7.3 color_slot の扱い
-- 使用中 `color_slot` は `isOpen = true` の Session だけを対象に集計する
-- 新規セッション作成時は、未使用の最小 `colorSlot` を割り当てる
-- `isOpen = false` になった Session の色は即時再利用可能とする
-- Phase 3 では色の手動変更は入れない
-
-### 7.4 auto close の扱い
-- `auto close` はこのフェーズでは実装しない
-- 理由:
-  - `last_active_at` と保存基盤が未確定
-  - Phase 4 の `autosave / is_open / cleanup` と一体で扱う方が整合的
-- 本フェーズでは、将来の `last_active_at` 追加を阻害しない state 設計に留める
-
-### 7.5 右クリックメニューの扱い
-- Phase 3 の右クリックメニューは Tauri native menu ではなく、React 側の web コンポーネントとして実装する
-- 理由:
-  - 透過前面レイヤー上での挙動を React 側で完結させたい
-  - native menu API との相性検証をこのフェーズに持ち込まない
+Gate 条件:
+- macOS メニューバーに sticky メニューが表示される
+- `New 1-Note Session` でメモが生成される
+- `Quit sticky` でアプリが終了する
+- 前面レイヤーの既存動作を壊していない
 
 ---
 
-## 8. Gate 条件（Exit Criteria）
-Phase 3 全体の完了条件は以下。
+## 6. Gate 条件（Phase 3 全体）
 
 1. `Cmd + Option + Enter` で1枚セッションを新規生成できる
-2. `Cmd + Option + N` で枚数選択UIを開き、`1`〜`9` のいずれかを押して指定枚数セッションを新規生成できる
+2. `Cmd + Option + N` から枚数選択UIを開き、指定枚数のセッションを生成できる
 3. 開いているセッション同士で `colorSlot` が重複しない
-4. 右クリックメニューから `このセッションを選択` に入れる
-5. セッション選択中に視覚的区別がある
-6. セッション選択中に一括移動ができる
-7. セッション選択中に `Cmd + S` と `Cmd + Enter` が成立する
-8. `このセッションを閉じる` が成立する
-9. `Delete` または `このセッションを削除...` で削除確認に入れる
-10. メニューバーから `New 1-Note Session` と主要導線を実行できる
-11. `Phase 2` の単体メモ操作を壊していない
+4. 右クリックメニューから `このセッションを選択` で `session_selected` に入れる
+5. `session_selected` 中はセッション内全メモに視覚表現（青枠）がある
+6. `session_selected` 中のドラッグで全メモがまとめて移動できる
+7. `Cmd + S` / `Cmd + Enter` が selection type に応じて正しく作用する
+8. `p` キーが選択メモの `isPinned` をトグルする
+9. `Delete` で削除確認モーダルが開き、確定 / キャンセルが動く
+10. `このセッションを閉じる` でセッションがデスクトップから消える
+11. メニューバーから `New 1-Note Session` と `Quit sticky` が動く
+12. Phase 2 の単体メモ操作（選択・編集・ドラッグ・リサイズ・保存）を壊していない
 
 ---
 
-## 9. 回帰 / 副作用チェック
-
-### UI / UX
-- メモ選択中のドラッグと、セッション選択中の一括ドラッグが競合しないか
-- 右クリック後に誤って編集へ入らないか
-- セッション選択時の視覚表現が過剰でないか
-- 色による識別が Apple メモ寄りのライトトーンを壊していないか
-
-### ショートカット
-- `Cmd + Option + Enter` が単なる再表示トグルに戻っていないか
-- `Cmd + Option + N` → picker 経由の複数枚生成が正常に動くか
-- `Cmd + S` / `Cmd + Enter` が Session 選択中と Memo 選択中で作用範囲を誤らないか
+## 7. 回帰 / 副作用チェック
 
 ### 状態管理
-- セッションを閉じた時に `colorSlot` が再利用可能になるか
-- セッション選択解除後に、誤って全メモが `memo_selected` 扱いにならないか
-- Session / Memo の state が二重化していないか
-
-### Tauri / 前面レイヤー
-- 透過前面レイヤーの既存疎通を壊していないか
-- メニューバー導線追加で前面レイヤー表示が壊れていないか
-
----
-
-## 10. 既存実装との差分
-- 現在は単一メモ state で動いている
-- `Cmd + Shift + 1` は 1枚セッション開始に寄せたが、内部的には単一メモ再表示寄りの暫定構造である
-- 右クリックメニュー、複数枚セッション、色スロット割り当て、セッション一括移動は未実装
-
-差分によるリスク:
-- `Phase 2` の単一メモ実装をそのまま複数セッションへ拡張すると state の入れ子で破綻しやすい
-- ショートカットだけ先に増やすと、UI側の選択モデルとズレる
-
-方針:
-- まず state 構造を Session 単位へ持ち上げる
-- 次に右クリック文脈と一括移動を足す
-- 最後にメニューバー導線を最小追加する
-
----
-
-## 11. DRY / KISS 評価
-
-### DRY
-- `Phase 2` の Memo 操作ロジックは、可能な限り `MemoCard` 単位で再利用する
-- ただし、Session 抽象化のための共通化は `必要最小限` に留める
-- `colorSlot` 割り当てや Session 生成は小さな純関数へ切り出してよい
-
-### KISS
-- まずはメモリ上の Session 配列で成立させる
-- DB保存・autosave・管理画面は混ぜない
-- Session 追加・削除・閉じるのロジックを先に分離し、将来の persistence は後から載せる
-
----
-
-## 12. セルフチェック結果
-
-### SSOT整合
-[x] 要件定義を確認した
-[x] 状態遷移文書を確認した
-[x] 操作一覧を確認した
-[x] DB設計と矛盾しない範囲に対象を限定した
-[x] 事前検討まとめと矛盾しない
-
-### 変更範囲
-[x] 1フェーズの主目的は1つ
-[x] サブフェーズごとに触るファイル数は3以下に抑える
-[x] 新規ファイルは必要時のみ1以下
-
-### 状態・保存
-[x] DB永続化と Session 操作を同時に進めない
-[x] autosave / cleanup は対象外として切り離した
-[x] `colorSlot` と `isOpen` の関係を明記した
+- A-01 移行後、`Session.selectionState` / `Memo.uiState` の参照残骸がないか（grep で確認）
+- `clearSelections` 相当の処理が `setSelection({ type: 'none' })` に一本化されているか
+- `selection.type === 'editing'` から `memo` への遷移（Esc / 範囲外クリック）が正しく動くか
+- セッションを閉じた後に `selection` が `none` にリセットされるか
 
 ### UI / UX
-[x] クリックモデルは現行SSOTに従う
-[x] セッション選択は右クリックメニュー経由に限定した
-[x] 一括移動を Gate 条件に含めた
+- `session_selected` 中の一括ドラッグと個別ドラッグが混在しないか
+- 右クリック後に誤って編集へ入らないか（`button !== 0` ガード確認）
+- 削除確認モーダル表示中に背後のメモをクリックできないようにしているか
+- Pin バッジがリサイズハンドルと重ならないか
 
-### Tauri / 疎通
-[x] 高リスク変更は最小メニューバー導線に限定した
-[x] 前面レイヤー既存疎通を回帰チェックに含めた
+### ショートカット
+- `Cmd + S` / `Cmd + Enter` が `selection.type` を正しく switch しているか
+- `p` キーが composition 中に反応しないか（isComposing ガード確認）
+- `Delete` キーが編集中（textarea にフォーカスあり）に反応しないか
 
-### 判定
-Phase 3 の詳細計画書として着手可能。
+### Tauri / 前面レイヤー
+- メニューバー追加で透過前面レイヤーの挙動が変わらないか
+- `Quit sticky` 後の cleanup が不完全なメモを残さないか（Phase 3 ではメモリ上のみなので影響は限定的）
 
 ---
 
-## 13. 変更履歴
-- 2026-04-08: 骨組み計画書を詳細計画へ更新
+## 8. DRY / KISS 評価
+
+- グローバル `selection` により、「何が選ばれているか」の判定が1箇所に集約される → DRY 改善
+- `Memo.uiState` / `Session.selectionState` の削除により二重管理が解消 → DRY 改善
+- 一括ドラッグのアンカー記録は既存の `DragInteraction` 型を拡張するのではなく、`selection.type === 'session'` の分岐で処理する → KISS 優先
+- モーダルは単一の `deleteConfirm` state で session / memo を enum で切り替え → 追加 state を最小化
+
+---
+
+## 9. MECE 検査
+
+### 検査A: Issue → Phase 対応
+| Issue | Phase |
+|---|---|
+| S-01, U-01, U-02, U-03, U-07, U-08 | 3-1 ✅ |
+| S-02, U-04 | 3-2 ✅ |
+| A-01, U-09 | 3-3 |
+| S-03, D-01 | 3-4 |
+| U-06 | 3-5 |
+| K-01 | U-09 に統合 |
+| K-02 | Phase 4 持ち越し（明示） |
+
+全 Issue に Phase が対応 → OK
+
+### 検査B: SSOT 整合
+- `操作一覧表.md` §2.2: セッション選択中の Cmd+S / Cmd+Enter / Delete → S-03, D-01 で対応
+- `操作一覧表.md` §2.1: `p` キーの記載なし → U-09 実装後に `操作一覧表.md` を更新する（実装フェーズの作業）
+- `画面ワイヤー仕様.md` §3.6: セッション選択時の全メモ青枠 → A-01 移行後も維持
+- `画面ワイヤー仕様.md` §3.8: 削除確認モーダル → D-01 で対応
+
+### 検査C: DRY / KISS
+- 選択状態の一本化（A-01）: 複雑化ではなく整理 → KISS 改善
+- Pin 機能（U-09）: Memo に boolean 1フィールド追加のみ → KISS
+- モーダル state（D-01）: 専用グローバル state 1つ → 適切
+
+---
+
+## 10. セルフチェック結果
+
+### SSOT整合
+- [x] 要件定義を確認した
+- [x] 状態遷移文書を確認した
+- [x] 操作一覧を確認した
+- [x] DB設計と矛盾しない範囲に対象を限定した（Phase 3 はメモリ上のみ）
+- [x] 事前検討まとめと矛盾しない
+
+### 変更範囲
+- [x] 各サブフェーズの主目的は1つ
+- [x] サブフェーズごとに触るファイル数は3以下
+- [x] 新規ファイルなし（既存ファイルの更新のみ）
+
+### 状態・保存
+- [x] DB永続化と Session 操作を同時に進めない
+- [x] autosave / cleanup は対象外として切り離した
+- [x] auto close は Phase 4 へ明示的に持ち越した
+
+### UI / UX
+- [x] クリックモデルは現行 SSOT に従う
+- [x] `p` キーの誤バインドを Issue として明示した
+- [x] 削除モーダル中の背後操作禁止を回帰チェックに含めた
+
+### Tauri / 疎通
+- [x] メニューバー追加を独立サブフェーズ（3-5）に分離した
+- [x] 前面レイヤーの回帰チェックを含めた
+
+### 判定
+Phase 3-3 から着手可能。
+
+---
+
+## 11. 変更履歴
+- 2026-04-08: 初版作成（骨組み計画）
+- 2026-04-08: 詳細計画へ更新（Phase 3-1 着手前）
+- 2026-04-08: Phase 3-1 / 3-2 完了を反映。A-01（グローバル Selection）・U-09（Pin / p キー修正）を追加。AI-Planning-Guidelines に準拠した構成へ全面改訂。
