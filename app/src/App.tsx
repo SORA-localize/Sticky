@@ -186,6 +186,7 @@ function App() {
   const sessionPickerRef = useRef<HTMLDivElement | null>(null)
 
   const getMemoIdentity = (sessionId: string, memoId: string) => `${sessionId}:${memoId}`
+  const openMemoCount = getOpenMemos(sessions).length
 
   const triggerLimitWarning = (kind: 'session' | 'memo') => {
     if (limitWarningTimerRef.current !== null) {
@@ -983,7 +984,9 @@ function App() {
 
       {limitWarning ? (
         <p className="limit-warning-badge" aria-live="assertive">
-          {limitWarning === 'session' ? 'これ以上セッションは開けません' : 'これ以上メモは表示できません'}
+          {limitWarning === 'session'
+            ? 'これ以上セッションは開けません'
+            : `これ以上表示できません (${openMemoCount}/${MAX_OPEN_MEMOS})`}
         </p>
       ) : null}
 
