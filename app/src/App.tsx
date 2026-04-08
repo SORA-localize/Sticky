@@ -98,10 +98,6 @@ function App() {
   }, [content])
 
   useEffect(() => {
-    setIsDirty(content !== savedContent)
-  }, [content, savedContent])
-
-  useEffect(() => {
     const handlePointerMove = (event: PointerEvent) => {
       const interaction = interactionRef.current
       if (!interaction) {
@@ -306,6 +302,7 @@ function App() {
     const nextValue = editorRef.current?.value ?? draftContentRef.current
     draftContentRef.current = nextValue
     setContent(nextValue)
+    setIsDirty(nextValue !== savedContent)
   }
 
   const handleShellPointerDown = (event: React.PointerEvent<HTMLElement>) => {
@@ -405,8 +402,12 @@ function App() {
             </div>
 
             <footer className="memo-card__footer">
-              <span>click: select / double click: edit</span>
-              <span>Cmd + S: save / Cmd + Enter: save and close</span>
+              {import.meta.env.DEV ? (
+                <>
+                  <span>click: select / double click: edit</span>
+                  <span>Cmd + S: save / Cmd + Enter: save and close</span>
+                </>
+              ) : null}
             </footer>
 
             {isSelected ? (
