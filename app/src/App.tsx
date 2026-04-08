@@ -41,15 +41,20 @@ const SLOT_PERCENTAGES = [
   { x: 0.83, y: 0.74 },
 ]
 
-type MemoUiState = 'idle' | 'memo_selected' | 'editing'
-type SessionSelectionState = 'idle' | 'session_selected'
+// グローバル選択状態 (A-01)
+type Selection =
+  | { type: 'none' }
+  | { type: 'memo';    sessionId: string; memoId: string }
+  | { type: 'editing'; sessionId: string; memoId: string }
+  | { type: 'session'; sessionId: string }
+
 type ResizeDirection = 'nw' | 'ne' | 'sw' | 'se'
 
 type Memo = {
   id: string
   content: string
   savedContent: string
-  uiState: MemoUiState
+  isPinned: boolean
   isVisible: boolean
   isDirty: boolean
   position: { x: number; y: number }
@@ -62,7 +67,6 @@ type Session = {
   id: string
   colorSlot: number
   isOpen: boolean
-  selectionState: SessionSelectionState
   memos: Memo[]
 }
 
@@ -167,17 +171,26 @@ function findAvailableSlotIndices(sessions: Session[], count: number) {
   return null
 }
 
-function clearSelections(sessions: Session[]) {
-  return sessions.map((session) => ({
-    ...session,
-    selectionState: 'idle' as SessionSelectionState,
-    memos: session.memos.map((memo) => ({ ...memo, uiState: 'idle' as MemoUiState })),
-  }))
+// Selection から編集中エントリを取得
+function getEditingEntry(selection: Selection, sessions: Session[]) {
+  if (selection.type !== 'editing') return null
+  const session = sessions.find((s) => s.id === selection.sessionId)
+  const memo = session?.memos.find((m) => m.id === selection.memoId)
+  return session && memo ? { session, memo } : null
+}
+
+// Selection からメモ選択エントリを取得
+function getSelectedEntry(selection: Selection, sessions: Session[]) {
+  if (selection.type !== 'memo') return null
+  const session = sessions.find((s) => s.id === selection.sessionId)
+  const memo = session?.memos.find((m) => m.id === selection.memoId)
+  return session && memo ? { session, memo } : null
 }
 
 function App() {
   const [clickThrough, setClickThrough] = useState(false)
   const [sessions, setSessions] = useState<Session[]>([])
+  const [selection, setSelection] = useState<Selection>({ type: 'none' })
   const [isComposing, setIsComposing] = useState(false)
   const [isSessionPickerVisible, setIsSessionPickerVisible] = useState(false)
   const [limitWarning, setLimitWarning] = useState<'session' | 'memo' | null>(null)
@@ -192,6 +205,10 @@ function App() {
   const draftContentRef = useRef<Record<string, string>>({})
   const cardRefs = useRef<Record<string, HTMLElement | null>>({})
   const sessionPickerRef = useRef<HTMLDivElement | null>(null)
+
+  // 常に最新の sessions を保持（useEffect([], []) 内のリスナーから参照するため）
+  const sessionsRef = useRef<Session[]>([])
+  sessionsRef.current = sessions
 
   const getMemoIdentity = (sessionId: string, memoId: string) => `${sessionId}:${memoId}`
   const openMemoCount = getOpenMemos(sessions).length
@@ -216,32 +233,31 @@ function App() {
     }
 
   const handleSelectSession = (sessionId: string) => {
-    setSessions((currentSessions) =>
-      clearSelections(currentSessions).map((session) =>
-        session.id !== sessionId
-          ? session
-          : { ...session, selectionState: 'session_selected' },
-      ),
-    )
+    setSelection({ type: 'session', sessionId })
     setContextMenu(null)
   }
 
   const handleCloseSession = (sessionId: string) => {
     setSessions((currentSessions) =>
-      clearSelections(currentSessions).map((session) =>
+      currentSessions.map((session) =>
         session.id !== sessionId
           ? session
           : {
               ...session,
               isOpen: false,
-              memos: session.memos.map((memo) => ({ ...memo, isVisible: false, uiState: 'idle' })),
+              memos: session.memos.map((memo) => ({ ...memo, isVisible: false })),
             },
       ),
     )
+    setSelection((prev) => {
+      if (prev.type === 'none') return prev
+      if ('sessionId' in prev && prev.sessionId === sessionId) return { type: 'none' }
+      return prev
+    })
     setContextMenu(null)
   }
 
-  const createMemo = (slotIndex: number, selected = false): Memo => {
+  const createMemo = (slotIndex: number): Memo => {
     const memoId = nextId('memo', idCounterRef.current.memo++)
     draftContentRef.current[memoId] = ''
 
@@ -249,7 +265,7 @@ function App() {
       id: memoId,
       content: '',
       savedContent: '',
-      uiState: selected ? 'memo_selected' : 'idle',
+      isPinned: false,
       isVisible: true,
       isDirty: false,
       position: getSlotPosition(slotIndex),
@@ -292,35 +308,10 @@ function App() {
         id: sessionId,
         colorSlot,
         isOpen: true,
-        selectionState: 'idle' as SessionSelectionState,
-        memos: slotIndices.map((slotIndex, index) => createMemo(slotIndex, index === 0)),
+        memos: slotIndices.map((slotIndex) => createMemo(slotIndex)),
       } satisfies Session,
       limitHit: null,
     }
-  }
-
-  const getEditingMemo = (currentSessions: Session[]) => {
-    for (const session of currentSessions) {
-      for (const memo of session.memos) {
-        if (memo.uiState === 'editing') {
-          return { session, memo }
-        }
-      }
-    }
-
-    return null
-  }
-
-  const getSelectedMemo = (currentSessions: Session[]) => {
-    for (const session of currentSessions) {
-      for (const memo of session.memos) {
-        if (memo.uiState === 'memo_selected') {
-          return { session, memo }
-        }
-      }
-    }
-
-    return null
   }
 
   const commitEditorValue = (sessionId: string, memoId: string) => {
@@ -377,19 +368,21 @@ function App() {
   useEffect(() => {
     const unlisten = Promise.all([
       listen('session://open-single', () => {
+        const currentSessions = sessionsRef.current
+        const result = createSession(1, currentSessions)
+
         setIsSessionPickerVisible(false)
         setContextMenu(null)
-        setSessions((currentSessions) => {
-          const nextSessions = clearSelections(currentSessions)
-          const result = createSession(1, nextSessions)
 
-          if (!result) return nextSessions
-          if (result.limitHit) {
-            triggerLimitWarning(result.limitHit)
-            return nextSessions
-          }
-          return [...nextSessions, result.session]
-        })
+        if (!result) return
+        if (result.limitHit) {
+          triggerLimitWarning(result.limitHit)
+          return
+        }
+
+        const newSession = result.session
+        setSessions((prev) => [...prev, newSession])
+        setSelection({ type: 'memo', sessionId: newSession.id, memoId: newSession.memos[0].id })
       }),
       listen('session://open-picker', () => {
         setIsSessionPickerVisible(true)
@@ -411,7 +404,7 @@ function App() {
   }, [])
 
   useEffect(() => {
-    const editingEntry = getEditingMemo(sessions)
+    const editingEntry = getEditingEntry(selection, sessions)
 
     if (!editingEntry) {
       return
@@ -424,7 +417,7 @@ function App() {
 
     editor.focus()
     editor.setSelectionRange(editor.value.length, editor.value.length)
-  }, [sessions])
+  }, [selection, sessions])
 
   useEffect(() => {
     const handlePointerMove = (event: PointerEvent) => {
@@ -557,8 +550,8 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      const editingEntry = getEditingMemo(sessions)
-      const selectedEntry = getSelectedMemo(sessions)
+      const editingEntry = getEditingEntry(selection, sessions)
+      const selectedEntry = getSelectedEntry(selection, sessions)
 
       const isSaveShortcut = event.metaKey && event.key.toLowerCase() === 's'
       const isCommitShortcut = event.metaKey && event.key === 'Enter'
@@ -573,18 +566,21 @@ function App() {
         if (/^[1-9]$/.test(event.key)) {
           event.preventDefault()
           const memoCount = Number(event.key)
+          const result = createSession(memoCount, sessions)
 
-          setSessions((currentSessions) => {
-            const nextSessions = clearSelections(currentSessions)
-            const result = createSession(memoCount, nextSessions)
+          if (!result) {
+            setIsSessionPickerVisible(false)
+            return
+          }
+          if (result.limitHit) {
+            triggerLimitWarning(result.limitHit)
+            setIsSessionPickerVisible(false)
+            return
+          }
 
-            if (!result) return nextSessions
-            if (result.limitHit) {
-              triggerLimitWarning(result.limitHit)
-              return nextSessions
-            }
-            return [...nextSessions, result.session]
-          })
+          const newSession = result.session
+          setSessions((prev) => [...prev, newSession])
+          setSelection({ type: 'memo', sessionId: newSession.id, memoId: newSession.memos[0].id })
           setIsSessionPickerVisible(false)
           return
         }
@@ -594,18 +590,7 @@ function App() {
         if (isSaveShortcut) {
           event.preventDefault()
           saveMemo(editingEntry.session.id, editingEntry.memo.id)
-          setSessions((currentSessions) =>
-            currentSessions.map((session) =>
-              session.id !== editingEntry.session.id
-                ? session
-                : {
-                    ...session,
-                    memos: session.memos.map((memo) =>
-                      memo.id !== editingEntry.memo.id ? memo : { ...memo, uiState: 'idle' },
-                    ),
-                  },
-            ),
-          )
+          setSelection({ type: 'none' })
           return
         }
 
@@ -624,35 +609,19 @@ function App() {
                         : {
                             ...memo,
                             isVisible: false,
-                            uiState: 'idle',
                           },
                     ),
                   },
             ),
           )
+          setSelection({ type: 'none' })
           return
         }
 
         if (event.key === 'Escape') {
           event.preventDefault()
           commitEditorValue(editingEntry.session.id, editingEntry.memo.id)
-          setSessions((currentSessions) =>
-            currentSessions.map((session) =>
-              session.id !== editingEntry.session.id
-                ? session
-                : {
-                    ...session,
-                    memos: session.memos.map((memo) =>
-                      memo.id !== editingEntry.memo.id
-                        ? memo
-                        : {
-                            ...memo,
-                            uiState: 'idle',
-                          },
-                    ),
-                  },
-            ),
-          )
+          setSelection({ type: 'none' })
         }
 
         return
@@ -665,7 +634,7 @@ function App() {
       if (selectedEntry && isSaveShortcut) {
         event.preventDefault()
         saveMemo(selectedEntry.session.id, selectedEntry.memo.id)
-        setSessions((currentSessions) => clearSelections(currentSessions))
+        setSelection({ type: 'none' })
         return
       }
 
@@ -684,12 +653,12 @@ function App() {
                       : {
                           ...memo,
                           isVisible: false,
-                          uiState: 'idle',
                         },
                   ),
                 },
           ),
         )
+        setSelection({ type: 'none' })
         return
       }
 
@@ -699,47 +668,59 @@ function App() {
           setContextMenu(null)
           return
         }
-        setSessions((currentSessions) => clearSelections(currentSessions))
+        setSelection({ type: 'none' })
+        return
       }
 
-      if (selectedEntry && event.key === 'p') {
+      // p キー: 選択 or 編集中メモの isPinned をトグル (U-09)
+      if (
+        (selection.type === 'memo' || selection.type === 'editing') &&
+        event.key === 'p'
+      ) {
+        const { sessionId, memoId } = selection
         event.preventDefault()
         setSessions((currentSessions) =>
-          clearSelections(currentSessions).map((session) =>
-            session.id !== selectedEntry.session.id
+          currentSessions.map((session) =>
+            session.id !== sessionId
               ? session
-              : { ...session, selectionState: 'session_selected' },
+              : {
+                  ...session,
+                  memos: session.memos.map((memo) =>
+                    memo.id !== memoId ? memo : { ...memo, isPinned: !memo.isPinned },
+                  ),
+                },
           ),
         )
         return
       }
 
-      if (selectedEntry && event.key === 'Enter') {
+      if (selection.type === 'memo' && event.key === 'Enter') {
+        const { sessionId, memoId } = selection
         event.preventDefault()
         setSessions((currentSessions) =>
           currentSessions.map((session) =>
-            session.id !== selectedEntry.session.id
+            session.id !== sessionId
               ? session
               : {
                   ...session,
                   memos: session.memos.map((memo) =>
-                    memo.id !== selectedEntry.memo.id
+                    memo.id !== memoId
                       ? memo
                       : {
                           ...memo,
-                          uiState: 'editing',
                           editingKey: memo.editingKey + 1,
                         },
                   ),
                 },
           ),
         )
+        setSelection({ type: 'editing', sessionId, memoId })
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isComposing, sessions, isSessionPickerVisible])
+  }, [isComposing, sessions, isSessionPickerVisible, selection])
 
   const handleMemoPointerDown =
     (sessionId: string, memoId: string) => (event: React.PointerEvent<HTMLElement>) => {
@@ -749,15 +730,19 @@ function App() {
 
       setContextMenu(null)
 
-      const editingEntry = getEditingMemo(sessions)
-      if (editingEntry && editingEntry.memo.id !== memoId) {
-        commitEditorValue(editingEntry.session.id, editingEntry.memo.id)
+      if (selection.type === 'editing' && selection.memoId !== memoId) {
+        commitEditorValue(selection.sessionId, selection.memoId)
       }
 
       const targetSession = sessions.find((session) => session.id === sessionId)
       const targetMemo = targetSession?.memos.find((memo) => memo.id === memoId)
 
-      if (!targetSession || !targetMemo || targetMemo.uiState === 'editing') {
+      if (!targetSession || !targetMemo) {
+        return
+      }
+
+      // 編集中のメモはドラッグ開始しない
+      if (selection.type === 'editing' && selection.memoId === memoId) {
         return
       }
 
@@ -782,24 +767,7 @@ function App() {
       }
 
       event.stopPropagation()
-
-      setSessions((currentSessions) =>
-        clearSelections(currentSessions).map((session) =>
-          session.id !== sessionId
-            ? session
-            : {
-                ...session,
-                memos: session.memos.map((memo) =>
-                  memo.id !== memoId
-                    ? memo
-                    : {
-                        ...memo,
-                        uiState: 'memo_selected',
-                      },
-                ),
-              },
-        ),
-      )
+      setSelection({ type: 'memo', sessionId, memoId })
     }
 
   const handleMemoDoubleClick =
@@ -812,7 +780,7 @@ function App() {
       event.stopPropagation()
 
       setSessions((currentSessions) =>
-        clearSelections(currentSessions).map((session) =>
+        currentSessions.map((session) =>
           session.id !== sessionId
             ? session
             : {
@@ -822,13 +790,13 @@ function App() {
                     ? memo
                     : {
                         ...memo,
-                        uiState: 'editing',
                         editingKey: memo.editingKey + 1,
                       },
                 ),
               },
         ),
       )
+      setSelection({ type: 'editing', sessionId, memoId })
     }
 
   const handleShellPointerDown = (event: React.PointerEvent<HTMLElement>) => {
@@ -845,12 +813,11 @@ function App() {
 
     setContextMenu(null)
 
-    const editingEntry = getEditingMemo(sessions)
-    if (editingEntry) {
-      commitEditorValue(editingEntry.session.id, editingEntry.memo.id)
+    if (selection.type === 'editing') {
+      commitEditorValue(selection.sessionId, selection.memoId)
     }
 
-    setSessions((currentSessions) => clearSelections(currentSessions))
+    setSelection({ type: 'none' })
     setIsSessionPickerVisible(false)
   }
 
@@ -880,7 +847,7 @@ function App() {
       dragExceededRef.current = true
 
       setSessions((currentSessions) =>
-        clearSelections(currentSessions).map((session) =>
+        currentSessions.map((session) =>
           session.id !== sessionId
             ? session
             : {
@@ -890,13 +857,13 @@ function App() {
                     ? memo
                     : {
                         ...memo,
-                        uiState: 'memo_selected',
                         slotIndex: null,
                       },
                 ),
               },
         ),
       )
+      setSelection({ type: 'memo', sessionId, memoId })
     }
 
   return (
@@ -907,9 +874,12 @@ function App() {
           session.memos
             .filter((memo) => memo.isVisible)
             .map((memo) => {
-              const isSelected = memo.uiState === 'memo_selected' || memo.uiState === 'editing'
-              const isEditing = memo.uiState === 'editing'
-              const isSessionSelected = session.selectionState === 'session_selected'
+              const isSelected =
+                (selection.type === 'memo' || selection.type === 'editing') &&
+                selection.memoId === memo.id
+              const isEditing = selection.type === 'editing' && selection.memoId === memo.id
+              const isSessionSelected =
+                selection.type === 'session' && selection.sessionId === session.id
               const showRing = isSelected || isSessionSelected
 
               return (
@@ -932,6 +902,10 @@ function App() {
                 >
                   {showRing ? <div className="memo-card__ring" /> : null}
 
+                  {memo.isPinned ? (
+                    <div className="memo-card__pin" aria-label="固定中" />
+                  ) : null}
+
                   <header className="memo-card__meta">
                     <span className="memo-card__badge">
                       {session.memos.length === 1 ? '1-note session' : `${session.memos.length}-note session`}
@@ -943,7 +917,7 @@ function App() {
                           ? 'dirty'
                           : clickThrough
                             ? 'click-through on'
-                            : memo.uiState === 'memo_selected'
+                            : isSelected
                               ? 'selected'
                               : 'ready'}
                     </span>
@@ -1021,7 +995,7 @@ function App() {
                   {import.meta.env.DEV ? (
                     <footer className="memo-card__footer">
                       <span>click: select / dbl: edit / right-click: session menu</span>
-                      <span>p: select session / Esc: deselect</span>
+                      <span>p: pin / Esc: deselect</span>
                       <span>Cmd+S: save+deselect / Cmd+Enter: save+close</span>
                     </footer>
                   ) : null}
@@ -1116,17 +1090,19 @@ function App() {
                   className="session-picker__button"
                   type="button"
                   onClick={() => {
-                    setSessions((currentSessions) => {
-                      const nextSessions = clearSelections(currentSessions)
-                      const result = createSession(count, nextSessions)
-
-                      if (!result) return nextSessions
-                      if (result.limitHit) {
-                        triggerLimitWarning(result.limitHit)
-                        return nextSessions
-                      }
-                      return [...nextSessions, result.session]
-                    })
+                    const result = createSession(count, sessions)
+                    if (!result) {
+                      setIsSessionPickerVisible(false)
+                      return
+                    }
+                    if (result.limitHit) {
+                      triggerLimitWarning(result.limitHit)
+                      setIsSessionPickerVisible(false)
+                      return
+                    }
+                    const newSession = result.session
+                    setSessions((prev) => [...prev, newSession])
+                    setSelection({ type: 'memo', sessionId: newSession.id, memoId: newSession.memos[0].id })
                     setIsSessionPickerVisible(false)
                   }}
                 >
