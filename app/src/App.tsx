@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import {
   DEFAULT_HEIGHT,
@@ -61,6 +62,7 @@ import './App.css'
 
 function App() {
   const [clickThrough, setClickThrough] = useState(false)
+  const [overlayInputMode, setOverlayInputMode] = useState<'interactive' | 'pass-through'>('interactive')
   const [sessions, setSessions] = useState<Session[]>([])
   const [selection, setSelection] = useState<Selection>({ type: 'none' })
   const [isComposing, setIsComposing] = useState(false)
@@ -321,7 +323,16 @@ function App() {
 
   const handleOverlayClickthroughEvent = useEffectEvent((enabled: boolean) => {
     setClickThrough(enabled)
+    setOverlayInputMode(enabled ? 'pass-through' : 'interactive')
   })
+
+  const applyOverlayInputMode = useCallback(async (mode: 'interactive' | 'pass-through') => {
+    try {
+      await invoke('set_overlay_input_mode', { mode })
+    } catch (error) {
+      console.error('failed to set overlay input mode:', error)
+    }
+  }, [])
 
   useEffect(() => {
     const unlisten = Promise.all([
@@ -346,6 +357,25 @@ function App() {
       })
     }
   }, [])
+
+  useEffect(() => {
+    const needsInteractive =
+      selection.type === 'editing' ||
+      contextMenu !== null ||
+      deleteConfirm !== null ||
+      isSessionPickerVisible
+
+    if (needsInteractive && overlayInputMode !== 'interactive') {
+      void applyOverlayInputMode('interactive')
+    }
+  }, [
+    contextMenu,
+    deleteConfirm,
+    isSessionPickerVisible,
+    overlayInputMode,
+    selection.type,
+    applyOverlayInputMode,
+  ])
 
   useEffect(() => {
     const editingEntry = getEditingEntry(selection, sessions)
@@ -1069,7 +1099,14 @@ function App() {
       ) : null}
 
       {import.meta.env.DEV ? (
-        <aside className="runtime-badge">
+        <aside
+          className="runtime-badge"
+          onClick={() => {
+            const nextMode =
+              overlayInputMode === 'interactive' ? 'pass-through' : 'interactive'
+            void applyOverlayInputMode(nextMode)
+          }}
+        >
           <span className="runtime-badge__dot" />
           <span>{clickThrough ? 'through' : 'overlay'}</span>
         </aside>

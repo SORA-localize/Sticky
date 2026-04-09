@@ -298,6 +298,25 @@ fn trash_memo(state: tauri::State<DbState>, memo_id: String) -> Result<(), Strin
     Ok(())
 }
 
+#[cfg(desktop)]
+#[tauri::command]
+fn set_overlay_input_mode(
+    app: tauri::AppHandle,
+    mode: String,
+) -> Result<bool, String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+
+    let enabled = mode == "pass-through";
+    window
+        .set_ignore_cursor_events(enabled)
+        .map_err(|e| e.to_string())?;
+    app.emit("overlay://clickthrough", enabled)
+        .map_err(|e| e.to_string())?;
+    Ok(enabled)
+}
+
 // ---- App entry ----
 
 #[cfg(desktop)]
@@ -327,6 +346,7 @@ pub fn run() {
             close_session,
             trash_session,
             trash_memo,
+            set_overlay_input_mode,
         ])
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -344,6 +364,8 @@ pub fn run() {
                         };
 
                         if shortcut == &open_single_session {
+                            let _ = window.set_ignore_cursor_events(false);
+                            let _ = app.emit("overlay://clickthrough", false);
                             let _ = window.show();
                             let _ = window.set_focus();
                             let _ = app.emit("session://open-single", true);
@@ -351,6 +373,8 @@ pub fn run() {
                         }
 
                         if shortcut == &open_session_picker {
+                            let _ = window.set_ignore_cursor_events(false);
+                            let _ = app.emit("overlay://clickthrough", false);
                             let _ = window.show();
                             let _ = window.set_focus();
                             let _ = app.emit("session://open-picker", PickerOpenPayload);
