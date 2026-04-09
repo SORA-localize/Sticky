@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { invoke } from '@tauri-apps/api/core'
 import {
   DEFAULT_HEIGHT,
   DEFAULT_WIDTH,
@@ -34,7 +33,6 @@ import {
   buildSessionsFromRows,
   findAvailableSlotIndices,
   findUnusedColorSlot,
-  generateTitle,
   getEditingEntry,
   getOpenMemos,
   getSelectedEntry,
@@ -47,13 +45,18 @@ import type {
   DeleteConfirm,
   Interaction,
   Memo,
-  MemoPayload,
   ResizeDirection,
   Selection,
   Session,
-  SessionPayload,
-  SessionRow,
 } from './types/sticky'
+import {
+  closeSessionInDb,
+  loadSessionsFromDb,
+  saveSessionsToDb,
+  startupCleanup,
+  trashMemoInDb,
+  trashSessionInDb,
+} from './services/stickyDb'
 import './App.css'
 
 function App() {
@@ -134,13 +137,11 @@ function App() {
     const deleteConfirm = deleteConfirmRef.current
     if (!deleteConfirm) return
     if (deleteConfirm.type === 'session') {
-      await invoke('trash_session', { sessionId: deleteConfirm.sessionId })
-      console.log('[DB] trash_session:', deleteConfirm.sessionId)
+      await trashSessionInDb(deleteConfirm.sessionId)
       setSessions((prev) => removeSession(prev, deleteConfirm.sessionId))
     } else {
       const { sessionId, memoId } = deleteConfirm
-      await invoke('trash_memo', { memoId })
-      console.log('[DB] trash_memo:', memoId)
+      await trashMemoInDb(memoId)
       setSessions((prev) => removeMemo(prev, sessionId, memoId))
     }
     setSelection({ type: 'none' })
@@ -255,44 +256,11 @@ function App() {
     )
   }
 
-  // ---- DB 保存経路 ----
-
-  const saveSessions = async (targetSessions: Session[]) => {
-    const open = targetSessions.filter((s) => s.isOpen)
-    console.log('[DB] saveSessions: sessions=', open.map((s) => s.id))
-    for (const session of open) {
-      const sp: SessionPayload = {
-        id: session.id,
-        colorSlot: session.colorSlot,
-        isOpen: session.isOpen,
-      }
-      await invoke('upsert_session', { session: sp })
-      for (const memo of session.memos.filter((m) => m.isVisible && m.content !== '')) {
-        const mp: MemoPayload = {
-          id: memo.id,
-          sessionId: session.id,
-          content: memo.content,
-          title: generateTitle(memo.content),
-          posX: memo.position.x,
-          posY: memo.position.y,
-          width: memo.size.width,
-          height: memo.size.height,
-          slotIndex: memo.slotIndex,
-          isOpen: memo.isVisible,
-          isPinned: memo.isPinned,
-        }
-        await invoke('upsert_memo', { memo: mp })
-        console.log('[DB] upsert_memo:', mp.id, 'title=', mp.title, 'content=', mp.content.slice(0, 20))
-      }
-    }
-    console.log('[DB] saveSessions done')
-  }
-
   // Cmd+S: 保存して閉じる
   const handleSaveAndClose = async (sessionId: string, memoId?: string) => {
     // saveMemo で state を最新化してから saveSessions で DB へ書き込む
     if (memoId) saveMemo(sessionId, memoId)
-    await saveSessions(sessionsRef.current)
+    await saveSessionsToDb(sessionsRef.current)
     if (memoId) {
       // メモ単体を閉じる
       setSessions((prev) =>
@@ -300,7 +268,7 @@ function App() {
       )
     } else {
       // セッションを閉じる
-      await invoke('close_session', { sessionId })
+      await closeSessionInDb(sessionId)
       setSessions((prev) =>
         closeSessionInState(prev, sessionId),
       )
@@ -311,7 +279,7 @@ function App() {
   // Cmd+Enter: 保存して表示継続
   const handleSaveAndStay = async (sessionId: string, memoId?: string) => {
     if (memoId) saveMemo(sessionId, memoId)
-    await saveSessions(sessionsRef.current)
+    await saveSessionsToDb(sessionsRef.current)
     setSelection({ type: 'none' })
   }
 
@@ -319,10 +287,8 @@ function App() {
   useEffect(() => {
     ;(async () => {
       try {
-        await invoke('startup_cleanup')
-        console.log('[DB] startup_cleanup done')
-        const rows = await invoke<SessionRow[]>('load_sessions')
-        console.log('[DB] load_sessions:', rows.length, 'sessions')
+        await startupCleanup()
+        const rows = await loadSessionsFromDb()
         setSessions(buildSessionsFromRows(rows))
       } catch (e) {
         console.error('[DB] startup failed:', e)
@@ -520,7 +486,7 @@ function App() {
     if (!hasDirty) return
 
     try {
-      await saveSessions(current)
+      await saveSessionsToDb(current)
     } catch (e) {
       console.error('autosave failed:', e)
     }
