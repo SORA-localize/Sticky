@@ -636,6 +636,21 @@ function App() {
       const isSaveShortcut = event.metaKey && event.key.toLowerCase() === 's'
       const isCommitShortcut = event.metaKey && event.key === 'Enter'
 
+      // 削除確認モーダル表示中: Enter/Del → 確定、Esc → キャンセル、それ以外はブロック
+      if (deleteConfirm !== null) {
+        if (event.key === 'Enter' || event.key === 'Delete' || event.key === 'Backspace') {
+          event.preventDefault()
+          handleDeleteConfirmed()
+          return
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          setDeleteConfirm(null)
+          return
+        }
+        return
+      }
+
       if (isSessionPickerVisible && !editingEntry) {
         if (event.key === 'Escape' || event.key === 'Delete' || event.key === 'Backspace') {
           event.preventDefault()
@@ -783,10 +798,6 @@ function App() {
         event.preventDefault()
         if (contextMenuRef.current !== null) {
           setContextMenu(null)
-          return
-        }
-        if (deleteConfirm !== null) {
-          setDeleteConfirm(null)
           return
         }
         setSelection({ type: 'none' })
