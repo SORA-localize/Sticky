@@ -259,8 +259,9 @@ async function saveSessions(sessions: Session[]) {
 ```
 
 呼び出し元:
-- `handleSave()`（Cmd+S ハンドラ）: `saveSessions` 後に `handleCloseSession` or stay
-- autosave タイマー: `saveSessions` のみ
+- `handleSaveAndClose()`（Cmd+S ハンドラ）: `saveSessions` 後にセッション/メモを閉じる
+- `handleSaveAndStay()`（Cmd+Enter ハンドラ）: `saveSessions` のみ（表示継続）
+- autosave タイマー: `saveSessions` を直接呼ぶ
 
 ---
 
@@ -604,7 +605,7 @@ Gate 条件:
 - [x] 暫定UIやデバッグ要素を残さない
 
 ### Tauri / 疎通
-- [x] tauri-plugin-sql の接続が高リスクのため Phase 4-1 で単独確認する
+- [x] rusqlite 接続（Connection::open + CREATE TABLE）が高リスクのため Phase 4-1 で単独確認する
 - [x] cargo check / 実機確認を Phase 4-1 Gate に含めた
 
 ### 判定
