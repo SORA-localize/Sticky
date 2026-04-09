@@ -81,6 +81,15 @@ type DragInteraction = {
   active: boolean
 }
 
+type SessionDragInteraction = {
+  type: 'session-drag'
+  sessionId: string
+  startX: number
+  startY: number
+  memoOrigins: Record<string, { x: number; y: number }>
+  active: boolean
+}
+
 type ResizeInteraction = {
   type: 'resize'
   sessionId: string
@@ -94,13 +103,18 @@ type ResizeInteraction = {
   originHeight: number
 }
 
-type Interaction = DragInteraction | ResizeInteraction
+type Interaction = DragInteraction | SessionDragInteraction | ResizeInteraction
 
 type ContextMenu = {
   sessionId: string
   x: number
   y: number
 } | null
+
+type DeleteConfirm =
+  | { type: 'session'; sessionId: string }
+  | { type: 'memo'; sessionId: string; memoId: string }
+  | null
 
 function nextId(prefix: string, current: number) {
   return `${prefix}-${current.toString(36)}`
@@ -197,6 +211,7 @@ function App() {
   const limitWarningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [contextMenu, setContextMenu] = useState<ContextMenu>(null)
   const contextMenuRef = useRef<HTMLElement | null>(null)
+  const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirm>(null)
 
   const idCounterRef = useRef({ session: 1, memo: 1 })
   const editorRefs = useRef<Record<string, HTMLTextAreaElement | null>>({})
@@ -255,6 +270,29 @@ function App() {
       return prev
     })
     setContextMenu(null)
+  }
+
+  const handleDeleteConfirmed = () => {
+    if (!deleteConfirm) return
+    if (deleteConfirm.type === 'session') {
+      handleCloseSession(deleteConfirm.sessionId)
+    } else {
+      const { sessionId, memoId } = deleteConfirm
+      setSessions((currentSessions) =>
+        currentSessions.map((session) =>
+          session.id !== sessionId
+            ? session
+            : {
+                ...session,
+                memos: session.memos.map((memo) =>
+                  memo.id !== memoId ? memo : { ...memo, isVisible: false },
+                ),
+              },
+        ),
+      )
+      setSelection({ type: 'none' })
+    }
+    setDeleteConfirm(null)
   }
 
   const createMemo = (slotIndex: number): Memo => {
@@ -423,6 +461,48 @@ function App() {
     const handlePointerMove = (event: PointerEvent) => {
       const interaction = interactionRef.current
       if (!interaction) {
+        return
+      }
+
+      if (interaction.type === 'session-drag') {
+        const deltaX = event.clientX - interaction.startX
+        const deltaY = event.clientY - interaction.startY
+        const distance = Math.hypot(deltaX, deltaY)
+
+        if (!interaction.active) {
+          if (distance < DRAG_THRESHOLD) return
+          interaction.active = true
+          dragExceededRef.current = true
+          // スロットを解放
+          setSessions((currentSessions) =>
+            currentSessions.map((session) =>
+              session.id !== interaction.sessionId
+                ? session
+                : {
+                    ...session,
+                    memos: session.memos.map((memo) => ({ ...memo, slotIndex: null })),
+                  },
+            ),
+          )
+        }
+
+        setSessions((currentSessions) =>
+          currentSessions.map((session) =>
+            session.id !== interaction.sessionId
+              ? session
+              : {
+                  ...session,
+                  memos: session.memos.map((memo) => {
+                    const origin = interaction.memoOrigins[memo.id]
+                    if (!origin) return memo
+                    return {
+                      ...memo,
+                      position: { x: origin.x + deltaX, y: origin.y + deltaY },
+                    }
+                  }),
+                },
+          ),
+        )
         return
       }
 
@@ -662,10 +742,51 @@ function App() {
         return
       }
 
+      if (selectedEntry && event.key === 'Delete') {
+        event.preventDefault()
+        setDeleteConfirm({ type: 'memo', sessionId: selectedEntry.session.id, memoId: selectedEntry.memo.id })
+        return
+      }
+
+      // セッション選択中のコマンド
+      if (selection.type === 'session') {
+        const { sessionId } = selection
+        const targetSession = sessions.find((s) => s.id === sessionId)
+
+        if (targetSession) {
+          if (isSaveShortcut) {
+            event.preventDefault()
+            for (const memo of targetSession.memos) {
+              if (memo.isDirty) saveMemo(sessionId, memo.id)
+            }
+            return
+          }
+
+          if (isCommitShortcut) {
+            event.preventDefault()
+            for (const memo of targetSession.memos) {
+              if (memo.isDirty) saveMemo(sessionId, memo.id)
+            }
+            handleCloseSession(sessionId)
+            return
+          }
+
+          if (event.key === 'Delete') {
+            event.preventDefault()
+            setDeleteConfirm({ type: 'session', sessionId })
+            return
+          }
+        }
+      }
+
       if (event.key === 'Escape') {
         event.preventDefault()
         if (contextMenuRef.current !== null) {
           setContextMenu(null)
+          return
+        }
+        if (deleteConfirm !== null) {
+          setDeleteConfirm(null)
           return
         }
         setSelection({ type: 'none' })
@@ -720,7 +841,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isComposing, sessions, isSessionPickerVisible, selection])
+  }, [isComposing, sessions, isSessionPickerVisible, selection, deleteConfirm])
 
   const handleMemoPointerDown =
     (sessionId: string, memoId: string) => (event: React.PointerEvent<HTMLElement>) => {
@@ -743,6 +864,24 @@ function App() {
 
       // 編集中のメモはドラッグ開始しない
       if (selection.type === 'editing' && selection.memoId === memoId) {
+        return
+      }
+
+      // セッション選択中にそのセッション内のメモを触った → 一括ドラッグ
+      if (selection.type === 'session' && selection.sessionId === sessionId) {
+        const memoOrigins: Record<string, { x: number; y: number }> = {}
+        for (const m of targetSession.memos.filter((m) => m.isVisible)) {
+          memoOrigins[m.id] = { x: m.position.x, y: m.position.y }
+        }
+        interactionRef.current = {
+          type: 'session-drag',
+          sessionId,
+          startX: event.clientX,
+          startY: event.clientY,
+          memoOrigins,
+          active: false,
+        }
+        dragExceededRef.current = false
         return
       }
 
@@ -995,8 +1134,8 @@ function App() {
                   {import.meta.env.DEV ? (
                     <footer className="memo-card__footer">
                       <span>click: select / dbl: edit / right-click: session menu</span>
-                      <span>p: pin / Esc: deselect</span>
-                      <span>Cmd+S: save+deselect / Cmd+Enter: save+close</span>
+                      <span>p: pin / Del: delete confirm / Esc: deselect</span>
+                      <span>Cmd+S: save / Cmd+Enter: save+close</span>
                     </footer>
                   ) : null}
 
@@ -1057,15 +1196,51 @@ function App() {
               このセッションを閉じる
             </button>
             <button
-              className="context-menu__item context-menu__item--danger context-menu__item--disabled"
+              className="context-menu__item context-menu__item--danger"
               type="button"
-              disabled
+              onClick={() => {
+                setDeleteConfirm({ type: 'session', sessionId: contextMenu.sessionId })
+                setContextMenu(null)
+              }}
             >
               このセッションを削除...
             </button>
           </nav>
         )
       })() : null}
+
+      {deleteConfirm ? (
+        <div
+          className="delete-confirm-overlay"
+          onPointerDown={(e) => {
+            if (e.target === e.currentTarget) setDeleteConfirm(null)
+          }}
+        >
+          <div className="delete-confirm" role="dialog" aria-modal="true">
+            <p className="delete-confirm__title">
+              {deleteConfirm.type === 'session'
+                ? 'このセッションをゴミ箱に移動しますか？'
+                : 'このメモをゴミ箱に移動しますか？'}
+            </p>
+            <div className="delete-confirm__actions">
+              <button
+                className="delete-confirm__btn"
+                type="button"
+                onClick={() => setDeleteConfirm(null)}
+              >
+                キャンセル
+              </button>
+              <button
+                className="delete-confirm__btn delete-confirm__btn--danger"
+                type="button"
+                onClick={handleDeleteConfirmed}
+              >
+                削除
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {limitWarning ? (
         <p className="limit-warning-badge" aria-live="assertive">
