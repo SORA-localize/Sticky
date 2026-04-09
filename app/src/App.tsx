@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import './App.css'
@@ -291,18 +291,12 @@ function App() {
   const cardRefs = useRef<Record<string, HTMLElement | null>>({})
   const sessionPickerRef = useRef<HTMLDivElement | null>(null)
 
-  // 常に最新の値を保持（keydown useEffect の stale closure を防ぐ）
   const sessionsRef = useRef<Session[]>([])
-  sessionsRef.current = sessions
   const selectionRef = useRef<Selection>({ type: 'none' })
-  selectionRef.current = selection
   const deleteConfirmRef = useRef<DeleteConfirm>(null)
-  deleteConfirmRef.current = deleteConfirm
   const handleDeleteConfirmedRef = useRef<() => void>(() => {})
   const isComposingRef = useRef(false)
-  isComposingRef.current = isComposing
   const isSessionPickerVisibleRef = useRef(false)
-  isSessionPickerVisibleRef.current = isSessionPickerVisible
 
   const getMemoIdentity = (sessionId: string, memoId: string) => `${sessionId}:${memoId}`
   const openMemoCount = getOpenMemos(sessions).length
@@ -351,7 +345,7 @@ function App() {
     setContextMenu(null)
   }
 
-  const handleDeleteConfirmed = async () => {
+  const handleDeleteConfirmed = useCallback(async () => {
     const deleteConfirm = deleteConfirmRef.current
     if (!deleteConfirm) return
     if (deleteConfirm.type === 'session') {
@@ -372,8 +366,31 @@ function App() {
     }
     setSelection({ type: 'none' })
     setDeleteConfirm(null)
-  }
-  handleDeleteConfirmedRef.current = handleDeleteConfirmed
+  }, [])
+
+  useEffect(() => {
+    sessionsRef.current = sessions
+  }, [sessions])
+
+  useEffect(() => {
+    selectionRef.current = selection
+  }, [selection])
+
+  useEffect(() => {
+    deleteConfirmRef.current = deleteConfirm
+  }, [deleteConfirm])
+
+  useEffect(() => {
+    isComposingRef.current = isComposing
+  }, [isComposing])
+
+  useEffect(() => {
+    isSessionPickerVisibleRef.current = isSessionPickerVisible
+  }, [isSessionPickerVisible])
+
+  useEffect(() => {
+    handleDeleteConfirmedRef.current = handleDeleteConfirmed
+  }, [handleDeleteConfirmed])
 
   const createMemo = (slotIndex: number): Memo => {
     const memoId = nextId('memo', idCounterRef.current.memo++)
@@ -566,33 +583,45 @@ function App() {
     })()
   }, [])
 
+  const handleOpenSingleEvent = useEffectEvent(() => {
+    const currentSessions = sessionsRef.current
+    const result = createSession(1, currentSessions)
+
+    setIsSessionPickerVisible(false)
+    setContextMenu(null)
+
+    if (!result) return
+    if (result.limitHit) {
+      triggerLimitWarning(result.limitHit)
+      return
+    }
+
+    const newSession = result.session
+    setSessions((prev) => [...prev, newSession])
+    setSelection({ type: 'memo', sessionId: newSession.id, memoId: newSession.memos[0].id })
+  })
+
+  const handleOpenPickerEvent = useEffectEvent(() => {
+    setIsSessionPickerVisible(true)
+    setSelection({ type: 'none' })
+  })
+
+  const handleOverlayClickthroughEvent = useEffectEvent((enabled: boolean) => {
+    setClickThrough(enabled)
+  })
+
   useEffect(() => {
     const unlisten = Promise.all([
       listen('session://open-single', () => {
-        const currentSessions = sessionsRef.current
-        const result = createSession(1, currentSessions)
-
-        setIsSessionPickerVisible(false)
-        setContextMenu(null)
-
-        if (!result) return
-        if (result.limitHit) {
-          triggerLimitWarning(result.limitHit)
-          return
-        }
-
-        const newSession = result.session
-        setSessions((prev) => [...prev, newSession])
-        setSelection({ type: 'memo', sessionId: newSession.id, memoId: newSession.memos[0].id })
+        handleOpenSingleEvent()
       }),
       listen('session://open-picker', () => {
-        setIsSessionPickerVisible(true)
-        setSelection({ type: 'none' })
+        handleOpenPickerEvent()
       }),
       ...(import.meta.env.DEV
         ? [
             listen<boolean>('overlay://clickthrough', (event) => {
-              setClickThrough(event.payload)
+              handleOverlayClickthroughEvent(event.payload)
             }),
           ]
         : []),
@@ -793,233 +822,236 @@ function App() {
   }, [])
 
   // autosave: 5分ごとに isDirty なセッションを保存
+  const runAutosave = useEffectEvent(async () => {
+    const current = sessionsRef.current
+    const hasDirty = current.some((s) => s.isOpen && s.memos.some((m) => m.isVisible && m.isDirty))
+    if (!hasDirty) return
+
+    try {
+      await saveSessions(current)
+    } catch (e) {
+      console.error('autosave failed:', e)
+    }
+  })
+
   useEffect(() => {
     const AUTOSAVE_INTERVAL = 5 * 60 * 1000
-    const id = setInterval(async () => {
-      const current = sessionsRef.current
-      const hasDirty = current.some((s) => s.isOpen && s.memos.some((m) => m.isVisible && m.isDirty))
-      if (!hasDirty) return
-      try {
-        await saveSessions(current)
-      } catch (e) {
-        console.error('autosave failed:', e)
-      }
+    const id = setInterval(() => {
+      void runAutosave()
     }, AUTOSAVE_INTERVAL)
     return () => clearInterval(id)
   }, [])
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      const selection            = selectionRef.current
-      const sessions             = sessionsRef.current
-      const deleteConfirm        = deleteConfirmRef.current
-      const isComposing          = isComposingRef.current
-      const isSessionPickerVisible = isSessionPickerVisibleRef.current
-      const editingEntry = getEditingEntry(selection, sessions)
-      const selectedEntry = getSelectedEntry(selection, sessions)
+  const handleWindowKeyDown = useEffectEvent((event: KeyboardEvent) => {
+    const selection = selectionRef.current
+    const sessions = sessionsRef.current
+    const deleteConfirm = deleteConfirmRef.current
+    const isComposing = isComposingRef.current
+    const isSessionPickerVisible = isSessionPickerVisibleRef.current
+    const editingEntry = getEditingEntry(selection, sessions)
+    const selectedEntry = getSelectedEntry(selection, sessions)
 
-      const isSaveShortcut = event.metaKey && event.key.toLowerCase() === 's'
-      const isCommitShortcut = event.metaKey && event.key === 'Enter'
+    const isSaveShortcut = event.metaKey && event.key.toLowerCase() === 's'
+    const isCommitShortcut = event.metaKey && event.key === 'Enter'
 
-      // 削除確認モーダル表示中: Enter/Del → 確定、Esc → キャンセル、それ以外はブロック
-      if (deleteConfirm !== null) {
-        if (event.key === 'Enter' || event.key === 'Delete' || event.key === 'Backspace') {
-          event.preventDefault()
-          handleDeleteConfirmedRef.current()
-          return
-        }
-        if (event.key === 'Escape') {
-          event.preventDefault()
-          setDeleteConfirm(null)
-          return
-        }
+    // 削除確認モーダル表示中: Enter/Del → 確定、Esc → キャンセル、それ以外はブロック
+    if (deleteConfirm !== null) {
+      if (event.key === 'Enter' || event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault()
+        handleDeleteConfirmedRef.current()
+        return
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setDeleteConfirm(null)
+        return
+      }
+      return
+    }
+
+    if (isSessionPickerVisible && !editingEntry) {
+      if (event.key === 'Escape' || event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault()
+        setIsSessionPickerVisible(false)
         return
       }
 
-      if (isSessionPickerVisible && !editingEntry) {
-        if (event.key === 'Escape' || event.key === 'Delete' || event.key === 'Backspace') {
-          event.preventDefault()
+      if (/^[1-9]$/.test(event.key)) {
+        event.preventDefault()
+        const memoCount = Number(event.key)
+        const result = createSession(memoCount, sessions)
+
+        if (!result) {
+          setIsSessionPickerVisible(false)
+          return
+        }
+        if (result.limitHit) {
+          triggerLimitWarning(result.limitHit)
           setIsSessionPickerVisible(false)
           return
         }
 
-        if (/^[1-9]$/.test(event.key)) {
-          event.preventDefault()
-          const memoCount = Number(event.key)
-          const result = createSession(memoCount, sessions)
-
-          if (!result) {
-            setIsSessionPickerVisible(false)
-            return
-          }
-          if (result.limitHit) {
-            triggerLimitWarning(result.limitHit)
-            setIsSessionPickerVisible(false)
-            return
-          }
-
-          const newSession = result.session
-          setSessions((prev) => [...prev, newSession])
-          setSelection({ type: 'memo', sessionId: newSession.id, memoId: newSession.memos[0].id })
-          setIsSessionPickerVisible(false)
-          return
-        }
-
-        // ピッカー表示中は他のキーをブロック
+        const newSession = result.session
+        setSessions((prev) => [...prev, newSession])
+        setSelection({ type: 'memo', sessionId: newSession.id, memoId: newSession.memos[0].id })
+        setIsSessionPickerVisible(false)
         return
       }
 
-      if (editingEntry) {
+      return
+    }
+
+    if (editingEntry) {
+      if (isSaveShortcut) {
+        event.preventDefault()
+        void handleSaveAndClose(editingEntry.session.id, editingEntry.memo.id)
+        return
+      }
+
+      if (isCommitShortcut) {
+        event.preventDefault()
+        void handleSaveAndStay(editingEntry.session.id, editingEntry.memo.id)
+        return
+      }
+
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        commitEditorValue(editingEntry.session.id, editingEntry.memo.id)
+        setSelection({ type: 'none' })
+      }
+
+      return
+    }
+
+    if (isComposing) {
+      return
+    }
+
+    if (selectedEntry && isSaveShortcut) {
+      event.preventDefault()
+      void handleSaveAndClose(selectedEntry.session.id, selectedEntry.memo.id)
+      return
+    }
+
+    if (selectedEntry && isCommitShortcut) {
+      event.preventDefault()
+      void handleSaveAndStay(selectedEntry.session.id, selectedEntry.memo.id)
+      return
+    }
+
+    if (selectedEntry && (event.key === 'Delete' || event.key === 'Backspace')) {
+      if (selectedEntry.memo.isPinned) return
+      event.preventDefault()
+      setDeleteConfirm({ type: 'memo', sessionId: selectedEntry.session.id, memoId: selectedEntry.memo.id })
+      return
+    }
+
+    if (selection.type === 'session') {
+      const { sessionId } = selection
+      const targetSession = sessions.find((s) => s.id === sessionId)
+
+      if (targetSession) {
         if (isSaveShortcut) {
           event.preventDefault()
-          handleSaveAndClose(editingEntry.session.id, editingEntry.memo.id)
+          void handleSaveAndClose(sessionId)
           return
         }
 
         if (isCommitShortcut) {
           event.preventDefault()
-          handleSaveAndStay(editingEntry.session.id, editingEntry.memo.id)
+          void handleSaveAndStay(sessionId)
           return
         }
 
-        if (event.key === 'Escape') {
+        if (event.key === 'Delete' || event.key === 'Backspace') {
+          const hasPinned = targetSession.memos.some((m) => m.isVisible && m.isPinned)
+          if (hasPinned) return
           event.preventDefault()
-          commitEditorValue(editingEntry.session.id, editingEntry.memo.id)
-          setSelection({ type: 'none' })
-        }
-
-        return
-      }
-
-      if (isComposing) {
-        return
-      }
-
-      if (selectedEntry && isSaveShortcut) {
-        event.preventDefault()
-        handleSaveAndClose(selectedEntry.session.id, selectedEntry.memo.id)
-        return
-      }
-
-      if (selectedEntry && isCommitShortcut) {
-        event.preventDefault()
-        handleSaveAndStay(selectedEntry.session.id, selectedEntry.memo.id)
-        return
-      }
-
-      if (selectedEntry && (event.key === 'Delete' || event.key === 'Backspace')) {
-        if (selectedEntry.memo.isPinned) return  // pin中は削除不可
-        event.preventDefault()
-        setDeleteConfirm({ type: 'memo', sessionId: selectedEntry.session.id, memoId: selectedEntry.memo.id })
-        return
-      }
-
-      // セッション選択中のコマンド
-      if (selection.type === 'session') {
-        const { sessionId } = selection
-        const targetSession = sessions.find((s) => s.id === sessionId)
-
-        if (targetSession) {
-          if (isSaveShortcut) {
-            event.preventDefault()
-            handleSaveAndClose(sessionId)
-            return
-          }
-
-          if (isCommitShortcut) {
-            event.preventDefault()
-            handleSaveAndStay(sessionId)
-            return
-          }
-
-          if (event.key === 'Delete' || event.key === 'Backspace') {
-            // pin済みメモがあればセッション削除不可
-            const hasPinned = targetSession.memos.some((m) => m.isVisible && m.isPinned)
-            if (hasPinned) return
-            event.preventDefault()
-            setDeleteConfirm({ type: 'session', sessionId })
-            return
-          }
-
-          if (event.key === 'p') {
-            event.preventDefault()
-            // 全部 pinned なら全解除、それ以外は全 pin（スマートトグル）
-            const allPinned = targetSession.memos.every((m) => !m.isVisible || m.isPinned)
-            setSessions((currentSessions) =>
-              currentSessions.map((session) =>
-                session.id !== sessionId
-                  ? session
-                  : {
-                      ...session,
-                      memos: session.memos.map((m) => ({ ...m, isPinned: !allPinned })),
-                    },
-              ),
-            )
-            return
-          }
-        }
-      }
-
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        if (contextMenuRef.current !== null) {
-          setContextMenu(null)
+          setDeleteConfirm({ type: 'session', sessionId })
           return
         }
-        setSelection({ type: 'none' })
-        return
-      }
 
-      // p キー: 選択 or 編集中メモの isPinned をトグル (U-09)
-      if (
-        (selection.type === 'memo' || selection.type === 'editing') &&
-        event.key === 'p'
-      ) {
-        const { sessionId, memoId } = selection
-        event.preventDefault()
-        setSessions((currentSessions) =>
-          currentSessions.map((session) =>
-            session.id !== sessionId
-              ? session
-              : {
-                  ...session,
-                  memos: session.memos.map((memo) =>
-                    memo.id !== memoId ? memo : { ...memo, isPinned: !memo.isPinned },
-                  ),
-                },
-          ),
-        )
-        return
-      }
-
-      if (selection.type === 'memo' && event.key === 'Enter') {
-        const { sessionId, memoId } = selection
-        event.preventDefault()
-        setSessions((currentSessions) =>
-          currentSessions.map((session) =>
-            session.id !== sessionId
-              ? session
-              : {
-                  ...session,
-                  memos: session.memos.map((memo) =>
-                    memo.id !== memoId
-                      ? memo
-                      : {
-                          ...memo,
-                          editingKey: memo.editingKey + 1,
-                        },
-                  ),
-                },
-          ),
-        )
-        setSelection({ type: 'editing', sessionId, memoId })
+        if (event.key === 'p') {
+          event.preventDefault()
+          const allPinned = targetSession.memos.every((m) => !m.isVisible || m.isPinned)
+          setSessions((currentSessions) =>
+            currentSessions.map((session) =>
+              session.id !== sessionId
+                ? session
+                : {
+                    ...session,
+                    memos: session.memos.map((m) => ({ ...m, isPinned: !allPinned })),
+                  },
+            ),
+          )
+          return
+        }
       }
     }
 
-    // capture: true で textarea より先に処理し、Cmd+Enter などが textarea に取られるのを防ぐ
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      if (contextMenuRef.current !== null) {
+        setContextMenu(null)
+        return
+      }
+      setSelection({ type: 'none' })
+      return
+    }
+
+    if (
+      (selection.type === 'memo' || selection.type === 'editing') &&
+      event.key === 'p'
+    ) {
+      const { sessionId, memoId } = selection
+      event.preventDefault()
+      setSessions((currentSessions) =>
+        currentSessions.map((session) =>
+          session.id !== sessionId
+            ? session
+            : {
+                ...session,
+                memos: session.memos.map((memo) =>
+                  memo.id !== memoId ? memo : { ...memo, isPinned: !memo.isPinned },
+                ),
+              },
+        ),
+      )
+      return
+    }
+
+    if (selection.type === 'memo' && event.key === 'Enter') {
+      const { sessionId, memoId } = selection
+      event.preventDefault()
+      setSessions((currentSessions) =>
+        currentSessions.map((session) =>
+          session.id !== sessionId
+            ? session
+            : {
+                ...session,
+                memos: session.memos.map((memo) =>
+                  memo.id !== memoId
+                    ? memo
+                    : {
+                        ...memo,
+                        editingKey: memo.editingKey + 1,
+                      },
+                ),
+              },
+        ),
+      )
+      setSelection({ type: 'editing', sessionId, memoId })
+    }
+  })
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      handleWindowKeyDown(event)
+    }
+
     window.addEventListener('keydown', handleKeyDown, { capture: true })
     return () => window.removeEventListener('keydown', handleKeyDown, { capture: true })
-  }, [])  // ref 経由で常に最新値を参照するため deps 不要
+  }, [])
 
   const handleMemoPointerDown =
     (sessionId: string, memoId: string) => (event: React.PointerEvent<HTMLElement>) => {
