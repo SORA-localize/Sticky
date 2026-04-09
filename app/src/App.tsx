@@ -637,7 +637,7 @@ function App() {
       const isCommitShortcut = event.metaKey && event.key === 'Enter'
 
       if (isSessionPickerVisible && !editingEntry) {
-        if (event.key === 'Escape' || event.key === 'Delete') {
+        if (event.key === 'Escape' || event.key === 'Delete' || event.key === 'Backspace') {
           event.preventDefault()
           setIsSessionPickerVisible(false)
           return
@@ -742,7 +742,7 @@ function App() {
         return
       }
 
-      if (selectedEntry && event.key === 'Delete') {
+      if (selectedEntry && (event.key === 'Delete' || event.key === 'Backspace')) {
         event.preventDefault()
         setDeleteConfirm({ type: 'memo', sessionId: selectedEntry.session.id, memoId: selectedEntry.memo.id })
         return
@@ -771,7 +771,7 @@ function App() {
             return
           }
 
-          if (event.key === 'Delete') {
+          if (event.key === 'Delete' || event.key === 'Backspace') {
             event.preventDefault()
             setDeleteConfirm({ type: 'session', sessionId })
             return
@@ -839,8 +839,9 @@ function App() {
       }
     }
 
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
+    // capture: true で textarea より先に処理し、Cmd+Enter などが textarea に取られるのを防ぐ
+    window.addEventListener('keydown', handleKeyDown, { capture: true })
+    return () => window.removeEventListener('keydown', handleKeyDown, { capture: true })
   }, [isComposing, sessions, isSessionPickerVisible, selection, deleteConfirm])
 
   const handleMemoPointerDown =
