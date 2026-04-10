@@ -80,6 +80,7 @@ function App() {
   const draftContentRef = useRef<Record<string, string>>({})
   const cardRefs = useRef<Record<string, HTMLElement | null>>({})
   const sessionPickerRef = useRef<HTMLDivElement | null>(null)
+  const resumePassThroughRef = useRef(false)
 
   const sessionsRef = useRef<Session[]>([])
   const selectionRef = useRef<Selection>({ type: 'none' })
@@ -346,13 +347,9 @@ function App() {
       listen('session://open-picker', () => {
         handleOpenPickerEvent()
       }),
-      ...(import.meta.env.DEV
-        ? [
-            listen<boolean>('overlay://clickthrough', (event) => {
-              handleOverlayClickthroughEvent(event.payload)
-            }),
-          ]
-        : []),
+      listen<boolean>('overlay://clickthrough', (event) => {
+        handleOverlayClickthroughEvent(event.payload)
+      }),
     ])
 
     return () => {
@@ -370,7 +367,21 @@ function App() {
       isSessionPickerVisible
 
     if (needsInteractive && overlayInputMode !== 'interactive') {
+      if (overlayInputMode === 'pass-through') {
+        resumePassThroughRef.current = true
+      }
       void applyOverlayInputMode('interactive')
+      return
+    }
+
+    if (
+      !needsInteractive &&
+      resumePassThroughRef.current &&
+      overlayInputMode === 'interactive' &&
+      selection.type === 'none'
+    ) {
+      resumePassThroughRef.current = false
+      void applyOverlayInputMode('pass-through')
     }
   }, [
     contextMenu,
