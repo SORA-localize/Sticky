@@ -9,6 +9,28 @@ use tauri::{PhysicalPosition, PhysicalSize};
 use serde::Serialize;
 #[cfg(desktop)]
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+#[cfg(desktop)]
+use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
+
+// ---- Tray State ----
+
+#[cfg(desktop)]
+struct TrayState(tauri::tray::TrayIcon);
+
+#[cfg(desktop)]
+fn update_tray(tray: &tauri::tray::TrayIcon, is_through: bool) {
+    let icon_bytes: &[u8] = if is_through {
+        include_bytes!("../icons/tray-through.png")
+    } else {
+        include_bytes!("../icons/tray-overlay.png")
+    };
+    let tooltip = if is_through { "sticky — through" } else { "sticky — overlay" };
+    if let Ok(icon) = tauri::image::Image::from_bytes(icon_bytes) {
+        let _ = tray.set_icon(Some(icon));
+        let _ = tray.set_icon_as_template(true);
+    }
+    let _ = tray.set_tooltip(Some(tooltip));
+}
 
 // ---- DB State ----
 
@@ -317,6 +339,9 @@ fn set_overlay_input_mode(
         .map_err(|e| e.to_string())?;
     app.emit("overlay://clickthrough", enabled)
         .map_err(|e| e.to_string())?;
+    if let Some(tray) = app.try_state::<TrayState>() {
+        update_tray(&tray.0, enabled);
+    }
     Ok(enabled)
 }
 
@@ -415,6 +440,9 @@ pub fn run() {
 
                             let _ = window.set_ignore_cursor_events(enabled);
                             let _ = app.emit("overlay://clickthrough", enabled);
+                            if let Some(tray) = app.try_state::<TrayState>() {
+                                update_tray(&tray.0, enabled);
+                            }
                             if !enabled {
                                 let _ = window.show();
                                 let _ = window.set_focus();
@@ -491,6 +519,39 @@ pub fn run() {
                     app.global_shortcut().register(open_single_session)?;
                     app.global_shortcut().register(open_session_picker)?;
                     app.global_shortcut().register(toggle_clickthrough)?;
+
+                    // メニューバー トレイアイコン
+                    let tray = TrayIconBuilder::new()
+                        .icon(tauri::image::Image::from_bytes(
+                            include_bytes!("../icons/tray-overlay.png"),
+                        )?)
+                        .icon_as_template(true)
+                        .tooltip("sticky — overlay")
+                        .on_tray_icon_event(|tray: &tauri::tray::TrayIcon, event| {
+                            if let TrayIconEvent::Click {
+                                button: MouseButton::Left,
+                                ..
+                            } = event
+                            {
+                                let app = tray.app_handle();
+                                let Some(window) = app.get_webview_window("main") else {
+                                    return;
+                                };
+                                let enabled: bool = window
+                                    .state::<OverlayState>()
+                                    .toggle_clickthrough()
+                                    .unwrap_or(false);
+                                let _ = window.set_ignore_cursor_events(enabled);
+                                let _ = app.emit("overlay://clickthrough", enabled);
+                                update_tray(tray, enabled);
+                                if !enabled {
+                                    let _ = window.show();
+                                    let _ = window.set_focus();
+                                }
+                            }
+                        })
+                        .build(app)?;
+                    app.manage(TrayState(tray));
                 }
 
                 if cfg!(debug_assertions) {
