@@ -4,6 +4,11 @@ export function appendSession(sessions: Session[], session: Session) {
   return [...sessions, session]
 }
 
+export function upsertSession(sessions: Session[], nextSession: Session) {
+  const withoutTarget = sessions.filter((session) => session.id !== nextSession.id)
+  return [...withoutTarget, nextSession]
+}
+
 export function removeSession(sessions: Session[], sessionId: string) {
   return sessions.filter((session) => session.id !== sessionId)
 }

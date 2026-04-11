@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { Management } from './Management'
 import {
   DEFAULT_HEIGHT,
   DEFAULT_WIDTH,
@@ -27,6 +28,7 @@ import {
   resizeMemo,
   toggleMemoPinnedState,
   toggleSessionPinnedState,
+  upsertSession,
   updateMemoContent,
   updateMemoDirtyState,
 } from './domain/sessionActions'
@@ -40,6 +42,7 @@ import {
   getSlotPosition,
   getOpenSessions,
   nextId,
+  reassignReopenedSessionSlots,
 } from './domain/sessionHelpers'
 import type {
   ContextMenu,
@@ -65,6 +68,16 @@ type OverlayResumePayload = {
 }
 
 function App() {
+  const params = new URLSearchParams(window.location.search)
+  const view = params.get('view')
+  if (view === 'management') {
+    const tab = params.get('tab') ?? 'home'
+    return <Management initialTab={tab} />
+  }
+  return <OverlayApp />
+}
+
+function OverlayApp() {
   const [clickThrough, setClickThrough] = useState(false)
   const [overlayInputMode, setOverlayInputMode] = useState<'interactive' | 'pass-through'>('interactive')
   const [sessions, setSessions] = useState<Session[]>([])
@@ -245,6 +258,21 @@ function App() {
     }
   }
 
+  const getReopenLimitHit = (currentSessions: Session[], reopenedSession: Session) => {
+    const openSessions = getOpenSessions(currentSessions)
+    const openMemos = getOpenMemos(currentSessions)
+
+    if (openSessions.length + 1 > MAX_OPEN_SESSIONS) {
+      return 'session'
+    }
+
+    if (openMemos.length + reopenedSession.memos.length > MAX_OPEN_MEMOS) {
+      return 'memo'
+    }
+
+    return null
+  }
+
   const commitEditorValue = (sessionId: string, memoId: string) => {
     const textarea = editorRefs.current[memoId]
     const nextValue = textarea?.value ?? draftContentRef.current[memoId] ?? ''
@@ -342,6 +370,33 @@ function App() {
     setOverlayInputMode(enabled ? 'pass-through' : 'interactive')
   })
 
+  const handleReopenSessionEvent = useEffectEvent(async (sessionId: string) => {
+    const currentSessions = sessionsRef.current
+    const rows = await loadSessionsFromDb()
+    const reopenedRow = rows.find((row) => row.id === sessionId)
+
+    if (!reopenedRow) {
+      return
+    }
+
+    const reopenedSession = buildSessionsFromRows([reopenedRow])[0]
+    const limitHit = getReopenLimitHit(currentSessions, reopenedSession)
+
+    if (limitHit) {
+      triggerLimitWarning(limitHit)
+      return
+    }
+
+    const reassignedSession = reassignReopenedSessionSlots(currentSessions, reopenedSession)
+    if (!reassignedSession) {
+      triggerLimitWarning('memo')
+      return
+    }
+
+    setSelection({ type: 'none' })
+    setSessions((prev) => upsertSession(prev, reassignedSession))
+  })
+
   const applyOverlayInputMode = useCallback(async (mode: 'interactive' | 'pass-through') => {
     try {
       await invoke('set_overlay_input_mode', { mode })
@@ -357,6 +412,9 @@ function App() {
       }),
       listen<OverlayResumePayload>('session://open-picker', (event) => {
         handleOpenPickerEvent(event.payload)
+      }),
+      listen<{ sessionId: string }>('session://reopen', (event) => {
+        void handleReopenSessionEvent(event.payload.sessionId)
       }),
       listen<boolean>('overlay://clickthrough', (event) => {
         handleOverlayClickthroughEvent(event.payload)

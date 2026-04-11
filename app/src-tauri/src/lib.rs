@@ -4,7 +4,7 @@ use std::sync::Mutex;
 #[cfg(desktop)]
 use tauri::{Emitter, Manager};
 #[cfg(desktop)]
-use tauri::{PhysicalPosition, PhysicalSize};
+use tauri::{PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 #[cfg(desktop)]
 use serde::Serialize;
 #[cfg(desktop)]
@@ -89,6 +89,37 @@ struct SessionRow {
     memos: Vec<MemoRow>,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagementMemoRow {
+    id: String,
+    session_id: String,
+    title: String,
+    content: String,
+    updated_at: String,
+    trashed_at: Option<String>,
+    is_open: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagementSessionRow {
+    id: String,
+    color_slot: i64,
+    is_open: bool,
+    updated_at: String,
+    trashed_at: Option<String>,
+    memos: Vec<ManagementMemoRow>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsRow {
+    auto_close_minutes: i64,
+    max_open_sessions: i64,
+    max_open_memos: i64,
+}
+
 // ---- DB schema init ----
 
 fn init_db(conn: &Connection) -> rusqlite::Result<()> {
@@ -133,6 +164,130 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
         INSERT OR IGNORE INTO settings (id, auto_close_minutes, max_open_sessions, max_open_memos)
         VALUES (1, 60, 5, 15);",
     )
+}
+
+fn load_management_sessions_with_filter(
+    conn: &Connection,
+    session_filter: &str,
+    memo_filter: &str,
+) -> Result<Vec<ManagementSessionRow>, String> {
+    let session_sql = format!(
+        "SELECT DISTINCT s.id, s.color_slot, s.is_open, s.updated_at, s.trashed_at
+         FROM sessions s
+         JOIN memos m ON m.session_id = s.id
+         WHERE {session_filter}
+         ORDER BY s.updated_at DESC"
+    );
+
+    let mut session_stmt = conn.prepare(&session_sql).map_err(|e| e.to_string())?;
+    let session_rows: Vec<(String, i64, bool, String, Option<String>)> = session_stmt
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get::<_, i64>(2)? != 0,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+
+    let memo_sql = format!(
+        "SELECT id, session_id, title, content, updated_at, trashed_at, is_open
+         FROM memos
+         WHERE session_id = ?1 AND {memo_filter}
+         ORDER BY updated_at DESC"
+    );
+
+    let mut result = Vec::new();
+    for (id, color_slot, is_open, updated_at, trashed_at) in session_rows {
+        let mut memo_stmt = conn.prepare(&memo_sql).map_err(|e| e.to_string())?;
+        let memos = memo_stmt
+            .query_map(params![id.clone()], |row| {
+                Ok(ManagementMemoRow {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    title: row.get(2)?,
+                    content: row.get(3)?,
+                    updated_at: row.get(4)?,
+                    trashed_at: row.get(5)?,
+                    is_open: row.get::<_, i64>(6)? != 0,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?;
+
+        if memos.is_empty() {
+            continue;
+        }
+
+        result.push(ManagementSessionRow {
+            id,
+            color_slot,
+            is_open,
+            updated_at,
+            trashed_at,
+            memos,
+        });
+    }
+
+    Ok(result)
+}
+
+fn delete_session_if_empty(conn: &Connection, session_id: &str) -> Result<(), String> {
+    let memo_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memos WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    if memo_count == 0 {
+        conn.execute("DELETE FROM sessions WHERE id = ?1", params![session_id])
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[cfg(desktop)]
+fn open_management_window(app: &tauri::AppHandle, tab: &str) -> Result<(), String> {
+    #[derive(Clone, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct OpenTabPayload<'a> {
+        tab: &'a str,
+    }
+
+    if let Some(window) = app.get_webview_window("management") {
+        window
+            .emit("management://open-tab", OpenTabPayload { tab })
+            .map_err(|e| e.to_string())?;
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    let window = WebviewWindowBuilder::new(
+        app,
+        "management",
+        WebviewUrl::App(format!("index.html?view=management&tab={tab}").into()),
+    )
+    .title("sticky")
+    .decorations(true)
+    .resizable(true)
+    .transparent(false)
+    .visible(true)
+    .inner_size(960.0, 680.0)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    window.show().map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // ---- Tauri commands ----
@@ -214,6 +369,26 @@ fn load_sessions(state: tauri::State<DbState>) -> Result<Vec<SessionRow>, String
     }
 
     Ok(result)
+}
+
+#[tauri::command]
+fn load_home(state: tauri::State<DbState>) -> Result<Vec<ManagementSessionRow>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    load_management_sessions_with_filter(
+        &conn,
+        "s.trashed_at IS NULL AND m.trashed_at IS NULL AND m.content != ''",
+        "trashed_at IS NULL AND content != ''",
+    )
+}
+
+#[tauri::command]
+fn load_trash(state: tauri::State<DbState>) -> Result<Vec<ManagementSessionRow>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    load_management_sessions_with_filter(
+        &conn,
+        "(s.trashed_at IS NOT NULL OR m.trashed_at IS NOT NULL) AND m.content != ''",
+        "trashed_at IS NOT NULL AND content != ''",
+    )
 }
 
 /// セッションを upsert（timestamp は Rust 側で生成）
@@ -320,6 +495,180 @@ fn trash_memo(state: tauri::State<DbState>, memo_id: String) -> Result<(), Strin
     Ok(())
 }
 
+#[tauri::command]
+fn restore_session(state: tauri::State<DbState>, session_id: String) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE sessions
+         SET is_open = 0, trashed_at = NULL, updated_at = datetime('now')
+         WHERE id = ?1",
+        params![session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE memos
+         SET is_open = 0, trashed_at = NULL, updated_at = datetime('now')
+         WHERE session_id = ?1",
+        params![session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn restore_memo(state: tauri::State<DbState>, memo_id: String) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let session_id: String = conn
+        .query_row(
+            "SELECT session_id FROM memos WHERE id = ?1",
+            params![memo_id.clone()],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE memos
+         SET is_open = 0, trashed_at = NULL, updated_at = datetime('now')
+         WHERE id = ?1",
+        params![memo_id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE sessions
+         SET trashed_at = NULL, updated_at = datetime('now')
+         WHERE id = ?1",
+        params![session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn permanent_delete_session(state: tauri::State<DbState>, session_id: String) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM memos WHERE session_id = ?1", params![session_id.clone()])
+        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM sessions WHERE id = ?1", params![session_id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn permanent_delete_memo(state: tauri::State<DbState>, memo_id: String) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let session_id: String = conn
+        .query_row(
+            "SELECT session_id FROM memos WHERE id = ?1",
+            params![memo_id.clone()],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM memos WHERE id = ?1", params![memo_id])
+        .map_err(|e| e.to_string())?;
+    delete_session_if_empty(&conn, &session_id)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn move_memo(
+    state: tauri::State<DbState>,
+    memo_id: String,
+    target_session_id: String,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let source_session_id: String = conn
+        .query_row(
+            "SELECT session_id FROM memos WHERE id = ?1",
+            params![memo_id.clone()],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE memos
+         SET session_id = ?2, updated_at = datetime('now')
+         WHERE id = ?1",
+        params![memo_id, target_session_id.clone()],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE sessions SET updated_at = datetime('now') WHERE id IN (?1, ?2)",
+        params![source_session_id.clone(), target_session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    delete_session_if_empty(&conn, &source_session_id)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn load_settings(state: tauri::State<DbState>) -> Result<SettingsRow, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT auto_close_minutes, max_open_sessions, max_open_memos
+         FROM settings
+         WHERE id = 1",
+        [],
+        |row| {
+            Ok(SettingsRow {
+                auto_close_minutes: row.get(0)?,
+                max_open_sessions: row.get(1)?,
+                max_open_memos: row.get(2)?,
+            })
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_settings(state: tauri::State<DbState>, auto_close_minutes: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE settings
+         SET auto_close_minutes = ?1
+         WHERE id = 1",
+        params![auto_close_minutes],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+fn reopen_session(app: tauri::AppHandle, state: tauri::State<DbState>, session_id: String) -> Result<(), String> {
+    #[derive(Clone, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ReopenPayload {
+        session_id: String,
+    }
+
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE sessions
+         SET is_open = 1, updated_at = datetime('now')
+         WHERE id = ?1 AND trashed_at IS NULL",
+        params![session_id.clone()],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE memos
+         SET is_open = 1, updated_at = datetime('now')
+         WHERE session_id = ?1 AND trashed_at IS NULL",
+        params![session_id.clone()],
+    )
+    .map_err(|e| e.to_string())?;
+    drop(conn);
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+
+    app.emit_to(
+        "main",
+        "session://reopen",
+        ReopenPayload { session_id },
+    )
+    .map_err(|e| e.to_string())
+}
+
 #[cfg(desktop)]
 #[tauri::command]
 fn set_overlay_input_mode(
@@ -372,11 +721,21 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             startup_cleanup,
             load_sessions,
+            load_home,
+            load_trash,
             upsert_session,
             upsert_memo,
             close_session,
             trash_session,
             trash_memo,
+            restore_session,
+            restore_memo,
+            permanent_delete_session,
+            permanent_delete_memo,
+            move_memo,
+            load_settings,
+            save_settings,
+            reopen_session,
             set_overlay_input_mode,
         ])
         .plugin(
@@ -475,9 +834,9 @@ pub fn run() {
                         &Submenu::with_items(app, "sticky", true, &[
                             &MenuItem::with_id(app, "new-session", "New 1-Note Session", true, None::<&str>)?,
                             &PredefinedMenuItem::separator(app)?,
-                            &MenuItem::with_id(app, "open-home", "Open Home", false, None::<&str>)?,
-                            &MenuItem::with_id(app, "open-trash", "Open Trash", false, None::<&str>)?,
-                            &MenuItem::with_id(app, "open-settings", "Open Settings", false, None::<&str>)?,
+                            &MenuItem::with_id(app, "open-home", "Open Home", true, None::<&str>)?,
+                            &MenuItem::with_id(app, "open-trash", "Open Trash", true, None::<&str>)?,
+                            &MenuItem::with_id(app, "open-settings", "Open Settings", true, None::<&str>)?,
                             &PredefinedMenuItem::separator(app)?,
                             &PredefinedMenuItem::quit(app, Some("Quit sticky"))?,
                         ])?,
@@ -491,7 +850,21 @@ pub fn run() {
                                     let _ = window.show();
                                     let _ = window.set_focus();
                                 }
-                                let _ = app.emit("session://open-single", true);
+                                let _ = app.emit(
+                                    "session://open-single",
+                                    OverlayResumePayload {
+                                        resume_pass_through: false,
+                                    },
+                                );
+                            }
+                            "open-home" => {
+                                let _ = open_management_window(app, "home");
+                            }
+                            "open-trash" => {
+                                let _ = open_management_window(app, "trash");
+                            }
+                            "open-settings" => {
+                                let _ = open_management_window(app, "settings");
                             }
                             _ => {}
                         }

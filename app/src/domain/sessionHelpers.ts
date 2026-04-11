@@ -99,6 +99,33 @@ export function findAvailableSlotIndices(sessions: Session[], count: number) {
   return null
 }
 
+export function reassignReopenedSessionSlots(
+  currentSessions: Session[],
+  reopenedSession: Session,
+) {
+  const occupiedSessions = currentSessions.filter((session) => session.id !== reopenedSession.id)
+  const slotIndices = findAvailableSlotIndices(occupiedSessions, reopenedSession.memos.length)
+
+  if (slotIndices === null) {
+    return null
+  }
+
+  return {
+    ...reopenedSession,
+    isOpen: true,
+    memos: reopenedSession.memos.map((memo, index) => {
+      const slotIndex = slotIndices[index]
+      return {
+        ...memo,
+        isVisible: true,
+        isDirty: false,
+        slotIndex,
+        position: getSlotPosition(slotIndex),
+      }
+    }),
+  }
+}
+
 export function getEditingEntry(selection: Selection, sessions: Session[]) {
   if (selection.type !== 'editing') return null
   const session = sessions.find((currentSession) => currentSession.id === selection.sessionId)

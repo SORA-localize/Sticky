@@ -276,6 +276,280 @@
   cursor: nwse-resize;
 }
 
+.management-shell {
+  min-height: 100vh;
+  padding: 32px;
+  background:
+    radial-gradient(circle at top left, rgba(247, 211, 171, 0.38), transparent 28%),
+    linear-gradient(180deg, #fbfaf7 0%, #f3eee6 100%);
+  color: var(--text-primary);
+}
+
+.management-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+.management-header__eyebrow {
+  margin: 0 0 6px;
+  font-size: 12px;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.management-header__title {
+  margin: 0;
+  font-size: clamp(28px, 4vw, 42px);
+  line-height: 1.05;
+}
+
+.management-header__meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--text-secondary);
+}
+
+.management-tabs {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.management-tab,
+.management-action,
+.management-inline-actions button,
+.management-context-menu button {
+  border: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--text-primary);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font: inherit;
+}
+
+.management-tab--active {
+  background: #201913;
+  color: #fffaf2;
+  border-color: #201913;
+}
+
+.management-panel {
+  border: 1px solid rgba(63, 50, 38, 0.08);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 20px 44px rgba(48, 38, 27, 0.08);
+  padding: 20px;
+}
+
+.management-toolbar {
+  margin-bottom: 18px;
+}
+
+.management-search,
+.management-setting select {
+  width: 100%;
+  max-width: 320px;
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.management-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.management-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.management-group__title {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.management-session {
+  border: 1px solid rgba(63, 50, 38, 0.08);
+  border-radius: 18px;
+  padding: 16px;
+  background: rgba(255, 252, 247, 0.88);
+}
+
+.management-session--trash {
+  background: rgba(250, 245, 241, 0.88);
+}
+
+.management-session__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.management-session__title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.management-session__color {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(32, 25, 19, 0.08);
+}
+
+.management-session__meta {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--text-secondary);
+}
+
+.management-memo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.management-memo-card {
+  border: 1px solid rgba(63, 50, 38, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.84);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+
+.management-memo-card--trash {
+  min-height: 180px;
+}
+
+.management-memo-card__time {
+  font-size: 11px;
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.management-memo-card__title {
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.management-memo-card__content {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+
+.management-empty {
+  margin: 0;
+  padding: 36px 12px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.management-inline-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.management-action--danger {
+  border-color: rgba(163, 55, 40, 0.2);
+  color: #8f2f20;
+}
+
+.management-context-menu {
+  position: fixed;
+  z-index: 30;
+  min-width: 220px;
+  padding: 10px;
+  border-radius: 16px;
+  border: 1px solid rgba(63, 50, 38, 0.12);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 18px 40px rgba(39, 31, 24, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.management-context-menu__section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(63, 50, 38, 0.08);
+}
+
+.management-context-menu__section span {
+  font-size: 11px;
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  padding: 0 4px;
+}
+
+.management-panel--settings {
+  max-width: 480px;
+}
+
+.management-setting {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+@media (max-width: 720px) {
+  .management-shell {
+    padding: 20px;
+  }
+
+  .management-header,
+  .management-session__header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .management-memo-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .memo-card--session-selected .memo-card__ring {
   border-color: var(--selection-blue);
   opacity: 0.6;

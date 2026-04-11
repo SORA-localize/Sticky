@@ -1,7 +1,14 @@
 import { invoke } from '@tauri-apps/api/core'
 
 import { generateTitle } from '../domain/sessionHelpers'
-import type { MemoPayload, Session, SessionPayload, SessionRow } from '../types/sticky'
+import type {
+  ManagementSessionRow,
+  MemoPayload,
+  Session,
+  SessionPayload,
+  SessionRow,
+  SettingsRow,
+} from '../types/sticky'
 
 export async function startupCleanup() {
   await invoke('startup_cleanup')
@@ -27,6 +34,46 @@ export async function trashMemoInDb(memoId: string) {
 export async function closeSessionInDb(sessionId: string) {
   await invoke('close_session', { sessionId })
   console.log('[DB] close_session:', sessionId)
+}
+
+export async function loadHomeFromDb() {
+  return invoke<ManagementSessionRow[]>('load_home')
+}
+
+export async function loadTrashFromDb() {
+  return invoke<ManagementSessionRow[]>('load_trash')
+}
+
+export async function restoreSessionInDb(sessionId: string) {
+  await invoke('restore_session', { sessionId })
+}
+
+export async function restoreMemoInDb(memoId: string) {
+  await invoke('restore_memo', { memoId })
+}
+
+export async function permanentDeleteSessionInDb(sessionId: string) {
+  await invoke('permanent_delete_session', { sessionId })
+}
+
+export async function permanentDeleteMemoInDb(memoId: string) {
+  await invoke('permanent_delete_memo', { memoId })
+}
+
+export async function moveMemoToSessionInDb(memoId: string, targetSessionId: string) {
+  await invoke('move_memo', { memoId, targetSessionId })
+}
+
+export async function loadSettingsFromDb() {
+  return invoke<SettingsRow>('load_settings')
+}
+
+export async function saveSettingsToDb(autoCloseMinutes: number) {
+  await invoke('save_settings', { autoCloseMinutes })
+}
+
+export async function reopenSessionInDb(sessionId: string) {
+  await invoke('reopen_session', { sessionId })
 }
 
 function buildSessionPayload(session: Session): SessionPayload {

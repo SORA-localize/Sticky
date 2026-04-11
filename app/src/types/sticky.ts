@@ -95,6 +95,7 @@ export type MemoPayload = {
 export type MemoRow = {
   id: string
   sessionId: string
+  title: string
   content: string
   posX: number
   posY: number
@@ -110,4 +111,29 @@ export type SessionRow = {
   colorSlot: number
   isOpen: boolean
   memos: MemoRow[]
+}
+
+export type ManagementMemoRow = {
+  id: string
+  sessionId: string
+  title: string
+  content: string
+  updatedAt: string
+  trashedAt: string | null
+  isOpen: boolean
+}
+
+export type ManagementSessionRow = {
+  id: string
+  colorSlot: number
+  isOpen: boolean
+  updatedAt: string
+  trashedAt: string | null
+  memos: ManagementMemoRow[]
+}
+
+export type SettingsRow = {
+  autoCloseMinutes: number
+  maxOpenSessions: number
+  maxOpenMemos: number
 }
