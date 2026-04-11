@@ -60,6 +60,10 @@ import {
 } from './services/stickyDb'
 import './App.css'
 
+type OverlayResumePayload = {
+  resumePassThrough: boolean
+}
+
 function App() {
   const [clickThrough, setClickThrough] = useState(false)
   const [overlayInputMode, setOverlayInputMode] = useState<'interactive' | 'pass-through'>('interactive')
@@ -95,6 +99,11 @@ function App() {
   const overlayModeHint = clickThrough
     ? 'Cmd+Opt+/ to return'
     : 'Click or press Cmd+Opt+/'
+  const markResumePassThrough = (enabled = clickThrough) => {
+    if (enabled) {
+      resumePassThroughRef.current = true
+    }
+  }
 
   const triggerLimitWarning = (kind: 'session' | 'memo') => {
     if (limitWarningTimerRef.current !== null) {
@@ -303,10 +312,11 @@ function App() {
     })()
   }, [])
 
-  const handleOpenSingleEvent = useEffectEvent(() => {
+  const handleOpenSingleEvent = useEffectEvent((payload: OverlayResumePayload) => {
     const currentSessions = sessionsRef.current
     const result = createSession(1, currentSessions)
 
+    markResumePassThrough(payload.resumePassThrough)
     setIsSessionPickerVisible(false)
     setContextMenu(null)
 
@@ -321,7 +331,8 @@ function App() {
     setSelection({ type: 'memo', sessionId: newSession.id, memoId: newSession.memos[0].id })
   })
 
-  const handleOpenPickerEvent = useEffectEvent(() => {
+  const handleOpenPickerEvent = useEffectEvent((payload: OverlayResumePayload) => {
+    markResumePassThrough(payload.resumePassThrough)
     setIsSessionPickerVisible(true)
     setSelection({ type: 'none' })
   })
@@ -341,11 +352,11 @@ function App() {
 
   useEffect(() => {
     const unlisten = Promise.all([
-      listen('session://open-single', () => {
-        handleOpenSingleEvent()
+      listen<OverlayResumePayload>('session://open-single', (event) => {
+        handleOpenSingleEvent(event.payload)
       }),
-      listen('session://open-picker', () => {
-        handleOpenPickerEvent()
+      listen<OverlayResumePayload>('session://open-picker', (event) => {
+        handleOpenPickerEvent(event.payload)
       }),
       listen<boolean>('overlay://clickthrough', (event) => {
         handleOverlayClickthroughEvent(event.payload)
@@ -645,6 +656,7 @@ function App() {
     if (selectedEntry && (event.key === 'Delete' || event.key === 'Backspace')) {
       if (selectedEntry.memo.isPinned) return
       event.preventDefault()
+      markResumePassThrough()
       setDeleteConfirm({ type: 'memo', sessionId: selectedEntry.session.id, memoId: selectedEntry.memo.id })
       return
     }
@@ -670,6 +682,7 @@ function App() {
           const hasPinned = targetSession.memos.some((m) => m.isVisible && m.isPinned)
           if (hasPinned) return
           event.preventDefault()
+          markResumePassThrough()
           setDeleteConfirm({ type: 'session', sessionId })
           return
         }
@@ -708,6 +721,7 @@ function App() {
     if (selection.type === 'memo' && event.key === 'Enter') {
       const { sessionId, memoId } = selection
       event.preventDefault()
+      markResumePassThrough()
       setSessions((currentSessions) => incrementMemoEditingKey(currentSessions, sessionId, memoId))
       setSelection({ type: 'editing', sessionId, memoId })
     }

@@ -309,6 +309,9 @@ fn set_overlay_input_mode(
         .ok_or_else(|| "main window not found".to_string())?;
 
     let enabled = mode == "pass-through";
+    if let Some(state) = app.try_state::<OverlayState>() {
+        let _ = state.set_clickthrough(enabled);
+    }
     window
         .set_ignore_cursor_events(enabled)
         .map_err(|e| e.to_string())?;
@@ -321,7 +324,10 @@ fn set_overlay_input_mode(
 
 #[cfg(desktop)]
 #[derive(Clone, Copy, Serialize)]
-struct PickerOpenPayload;
+#[serde(rename_all = "camelCase")]
+struct OverlayResumePayload {
+    resume_pass_through: bool,
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -364,20 +370,40 @@ pub fn run() {
                         };
 
                         if shortcut == &open_single_session {
+                            let resume_pass_through = window
+                                .state::<OverlayState>()
+                                .is_clickthrough()
+                                .unwrap_or(false);
+                            let _ = window.state::<OverlayState>().set_clickthrough(false);
                             let _ = window.set_ignore_cursor_events(false);
                             let _ = app.emit("overlay://clickthrough", false);
                             let _ = window.show();
                             let _ = window.set_focus();
-                            let _ = app.emit("session://open-single", true);
+                            let _ = app.emit(
+                                "session://open-single",
+                                OverlayResumePayload {
+                                    resume_pass_through,
+                                },
+                            );
                             return;
                         }
 
                         if shortcut == &open_session_picker {
+                            let resume_pass_through = window
+                                .state::<OverlayState>()
+                                .is_clickthrough()
+                                .unwrap_or(false);
+                            let _ = window.state::<OverlayState>().set_clickthrough(false);
                             let _ = window.set_ignore_cursor_events(false);
                             let _ = app.emit("overlay://clickthrough", false);
                             let _ = window.show();
                             let _ = window.set_focus();
-                            let _ = app.emit("session://open-picker", PickerOpenPayload);
+                            let _ = app.emit(
+                                "session://open-picker",
+                                OverlayResumePayload {
+                                    resume_pass_through,
+                                },
+                            );
                             return;
                         }
 
@@ -493,6 +519,23 @@ impl OverlayState {
             .lock()
             .map_err(|_| "failed to lock overlay state".to_string())?;
         *state = !*state;
+        Ok(*state)
+    }
+
+    fn set_clickthrough(&self, enabled: bool) -> Result<(), String> {
+        let mut state = self
+            .0
+            .lock()
+            .map_err(|_| "failed to lock overlay state".to_string())?;
+        *state = enabled;
+        Ok(())
+    }
+
+    fn is_clickthrough(&self) -> Result<bool, String> {
+        let state = self
+            .0
+            .lock()
+            .map_err(|_| "failed to lock overlay state".to_string())?;
         Ok(*state)
     }
 }
