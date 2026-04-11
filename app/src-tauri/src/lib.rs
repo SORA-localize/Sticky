@@ -10,7 +10,7 @@ use serde::Serialize;
 #[cfg(desktop)]
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 #[cfg(desktop)]
-use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 // ---- Tray State ----
 
@@ -32,9 +32,50 @@ fn update_tray(tray: &tauri::tray::TrayIcon, is_through: bool) {
     let _ = tray.set_tooltip(Some(tooltip));
 }
 
+#[cfg(desktop)]
+fn apply_overlay_clickthrough(
+    app: &tauri::AppHandle,
+    enabled: bool,
+    emit_manual_toggle: bool,
+) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+
+    if let Some(state) = app.try_state::<OverlayState>() {
+        state.set_clickthrough(enabled)?;
+    }
+
+    window
+        .set_ignore_cursor_events(enabled)
+        .map_err(|e| e.to_string())?;
+
+    if emit_manual_toggle {
+        app.emit("overlay://manual-toggle", enabled)
+            .map_err(|e| e.to_string())?;
+    }
+
+    app.emit("overlay://clickthrough", enabled)
+        .map_err(|e| e.to_string())?;
+
+    if let Some(tray) = app.try_state::<TrayState>() {
+        update_tray(&tray.0, enabled);
+    }
+
+    if !enabled {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+
+    Ok(())
+}
+
 // ---- DB State ----
 
 struct DbState(Mutex<Connection>);
+
+#[cfg(desktop)]
+struct MemoWindowCounter(Mutex<u64>);
 
 // ---- Payload types (frontend → Rust) ----
 
@@ -263,8 +304,8 @@ fn open_management_window(app: &tauri::AppHandle, tab: &str) -> Result<(), Strin
     }
 
     if let Some(window) = app.get_webview_window("management") {
-        window
-            .emit("management://open-tab", OpenTabPayload { tab })
+        app
+            .emit_to("management", "management://open-tab", OpenTabPayload { tab })
             .map_err(|e| e.to_string())?;
         window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())?;
@@ -282,6 +323,37 @@ fn open_management_window(app: &tauri::AppHandle, tab: &str) -> Result<(), Strin
     .transparent(false)
     .visible(true)
     .inner_size(960.0, 680.0)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    window.show().map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(desktop)]
+fn open_memo_window(app: &tauri::AppHandle) -> Result<(), String> {
+    let counter = app
+        .try_state::<MemoWindowCounter>()
+        .ok_or_else(|| "memo window counter missing".to_string())?;
+    let mut value = counter.0.lock().map_err(|e| e.to_string())?;
+    *value += 1;
+    let memo_id = format!("memo-{}", *value);
+    let label = format!("memo:{memo_id}");
+    drop(value);
+
+    let window = WebviewWindowBuilder::new(
+        app,
+        label,
+        WebviewUrl::App(format!("index.html?view=memo&memoId={memo_id}").into()),
+    )
+    .title("sticky")
+    .inner_size(360.0, 320.0)
+    .min_inner_size(320.0, 260.0)
+    .resizable(true)
+    .transparent(true)
+    .decorations(false)
+    .visible(true)
     .build()
     .map_err(|e| e.to_string())?;
 
@@ -675,33 +747,12 @@ fn set_overlay_input_mode(
     app: tauri::AppHandle,
     mode: String,
 ) -> Result<bool, String> {
-    let window = app
-        .get_webview_window("main")
-        .ok_or_else(|| "main window not found".to_string())?;
-
     let enabled = mode == "pass-through";
-    if let Some(state) = app.try_state::<OverlayState>() {
-        let _ = state.set_clickthrough(enabled);
-    }
-    window
-        .set_ignore_cursor_events(enabled)
-        .map_err(|e| e.to_string())?;
-    app.emit("overlay://clickthrough", enabled)
-        .map_err(|e| e.to_string())?;
-    if let Some(tray) = app.try_state::<TrayState>() {
-        update_tray(&tray.0, enabled);
-    }
+    apply_overlay_clickthrough(&app, enabled, false)?;
     Ok(enabled)
 }
 
 // ---- App entry ----
-
-#[cfg(desktop)]
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct OverlayResumePayload {
-    resume_pass_through: bool,
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -712,10 +763,6 @@ pub fn run() {
 
     let open_single_session =
         Shortcut::new(Some(Modifiers::SUPER | Modifiers::ALT), Code::Enter);
-    let open_session_picker =
-        Shortcut::new(Some(Modifiers::SUPER | Modifiers::ALT), Code::KeyN);
-    let toggle_clickthrough =
-        Shortcut::new(Some(Modifiers::SUPER | Modifiers::ALT), Code::Slash);
 
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -742,70 +789,13 @@ pub fn run() {
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler({
                     let open_single_session = open_single_session.clone();
-                    let open_session_picker = open_session_picker.clone();
-                    let toggle_clickthrough = toggle_clickthrough.clone();
                     move |app, shortcut, event| {
                         if event.state() != ShortcutState::Pressed {
                             return;
                         }
 
-                        let Some(window) = app.get_webview_window("main") else {
-                            return;
-                        };
-
                         if shortcut == &open_single_session {
-                            let resume_pass_through = window
-                                .state::<OverlayState>()
-                                .is_clickthrough()
-                                .unwrap_or(false);
-                            let _ = window.state::<OverlayState>().set_clickthrough(false);
-                            let _ = window.set_ignore_cursor_events(false);
-                            let _ = app.emit("overlay://clickthrough", false);
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                            let _ = app.emit(
-                                "session://open-single",
-                                OverlayResumePayload {
-                                    resume_pass_through,
-                                },
-                            );
-                            return;
-                        }
-
-                        if shortcut == &open_session_picker {
-                            let resume_pass_through = window
-                                .state::<OverlayState>()
-                                .is_clickthrough()
-                                .unwrap_or(false);
-                            let _ = window.state::<OverlayState>().set_clickthrough(false);
-                            let _ = window.set_ignore_cursor_events(false);
-                            let _ = app.emit("overlay://clickthrough", false);
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                            let _ = app.emit(
-                                "session://open-picker",
-                                OverlayResumePayload {
-                                    resume_pass_through,
-                                },
-                            );
-                            return;
-                        }
-
-                        if shortcut == &toggle_clickthrough {
-                            let enabled = window
-                                .state::<OverlayState>()
-                                .toggle_clickthrough()
-                                .unwrap_or(false);
-
-                            let _ = window.set_ignore_cursor_events(enabled);
-                            let _ = app.emit("overlay://clickthrough", enabled);
-                            if let Some(tray) = app.try_state::<TrayState>() {
-                                update_tray(&tray.0, enabled);
-                            }
-                            if !enabled {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
+                            let _ = open_memo_window(app);
                         }
                     }
                 })
@@ -813,12 +803,11 @@ pub fn run() {
         )
         .setup({
             let open_single_session = open_single_session.clone();
-            let open_session_picker = open_session_picker.clone();
-            let toggle_clickthrough = toggle_clickthrough.clone();
             move |app| {
                 #[cfg(desktop)]
                 {
                     app.manage(OverlayState::default());
+                    app.manage(MemoWindowCounter(Mutex::new(0)));
 
                     // DB 初期化
                     let app_data_dir = app.path().app_data_dir()?;
@@ -846,16 +835,7 @@ pub fn run() {
                     app.on_menu_event(|app, event| {
                         match event.id().as_ref() {
                             "new-session" => {
-                                if let Some(window) = app.get_webview_window("main") {
-                                    let _ = window.show();
-                                    let _ = window.set_focus();
-                                }
-                                let _ = app.emit(
-                                    "session://open-single",
-                                    OverlayResumePayload {
-                                        resume_pass_through: false,
-                                    },
-                                );
+                                let _ = open_memo_window(app);
                             }
                             "open-home" => {
                                 let _ = open_management_window(app, "home");
@@ -875,23 +855,15 @@ pub fn run() {
                         .expect("main window not found");
 
                     window.set_decorations(false)?;
-                    window.set_always_on_top(true)?;
+                    window.set_always_on_top(false)?;
                     window.set_shadow(false)?;
-                    window.set_visible_on_all_workspaces(true)?;
+                    window.set_visible_on_all_workspaces(false)?;
                     window.set_skip_taskbar(true)?;
-
-                    if let Some(monitor) = window.current_monitor()? {
-                        let size = monitor.size();
-                        let position = monitor.position();
-                        window.set_position(PhysicalPosition::new(position.x, position.y))?;
-                        window.set_size(PhysicalSize::new(size.width, size.height))?;
-                    }
-
-                    window.set_focus()?;
+                    window.set_position(PhysicalPosition::new(0, 0))?;
+                    window.set_size(PhysicalSize::new(1, 1))?;
+                    let _ = window.hide();
 
                     app.global_shortcut().register(open_single_session)?;
-                    app.global_shortcut().register(open_session_picker)?;
-                    app.global_shortcut().register(toggle_clickthrough)?;
 
                     // メニューバー トレイアイコン
                     let tray = TrayIconBuilder::new()
@@ -903,24 +875,12 @@ pub fn run() {
                         .on_tray_icon_event(|tray: &tauri::tray::TrayIcon, event| {
                             if let TrayIconEvent::Click {
                                 button: MouseButton::Left,
+                                button_state: MouseButtonState::Up,
                                 ..
                             } = event
                             {
                                 let app = tray.app_handle();
-                                let Some(window) = app.get_webview_window("main") else {
-                                    return;
-                                };
-                                let enabled: bool = window
-                                    .state::<OverlayState>()
-                                    .toggle_clickthrough()
-                                    .unwrap_or(false);
-                                let _ = window.set_ignore_cursor_events(enabled);
-                                let _ = app.emit("overlay://clickthrough", enabled);
-                                update_tray(tray, enabled);
-                                if !enabled {
-                                    let _ = window.show();
-                                    let _ = window.set_focus();
-                                }
+                                let _ = open_memo_window(&app);
                             }
                         })
                         .build(app)?;
@@ -947,15 +907,6 @@ struct OverlayState(std::sync::Mutex<bool>);
 
 #[cfg(desktop)]
 impl OverlayState {
-    fn toggle_clickthrough(&self) -> Result<bool, String> {
-        let mut state = self
-            .0
-            .lock()
-            .map_err(|_| "failed to lock overlay state".to_string())?;
-        *state = !*state;
-        Ok(*state)
-    }
-
     fn set_clickthrough(&self, enabled: bool) -> Result<(), String> {
         let mut state = self
             .0
@@ -963,13 +914,5 @@ impl OverlayState {
             .map_err(|_| "failed to lock overlay state".to_string())?;
         *state = enabled;
         Ok(())
-    }
-
-    fn is_clickthrough(&self) -> Result<bool, String> {
-        let state = self
-            .0
-            .lock()
-            .map_err(|_| "failed to lock overlay state".to_string())?;
-        Ok(*state)
     }
 }

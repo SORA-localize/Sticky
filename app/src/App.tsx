@@ -74,12 +74,16 @@ function App() {
     const tab = params.get('tab') ?? 'home'
     return <Management initialTab={tab} />
   }
-  return <OverlayApp />
+  if (view === 'overlay') {
+    return <OverlayApp />
+  }
+  return <div className="controller-shell" aria-hidden="true" />
 }
 
 function OverlayApp() {
   const [clickThrough, setClickThrough] = useState(false)
   const [overlayInputMode, setOverlayInputMode] = useState<'interactive' | 'pass-through'>('interactive')
+  const [passThroughWanted, setPassThroughWanted] = useState(false)
   const [sessions, setSessions] = useState<Session[]>([])
   const [selection, setSelection] = useState<Selection>({ type: 'none' })
   const [isComposing, setIsComposing] = useState(false)
@@ -97,7 +101,6 @@ function OverlayApp() {
   const draftContentRef = useRef<Record<string, string>>({})
   const cardRefs = useRef<Record<string, HTMLElement | null>>({})
   const sessionPickerRef = useRef<HTMLDivElement | null>(null)
-  const resumePassThroughRef = useRef(false)
 
   const sessionsRef = useRef<Session[]>([])
   const selectionRef = useRef<Selection>({ type: 'none' })
@@ -112,11 +115,6 @@ function OverlayApp() {
   const overlayModeHint = clickThrough
     ? 'Cmd+Opt+/ to return'
     : 'Click or press Cmd+Opt+/'
-  const markResumePassThrough = (enabled = clickThrough) => {
-    if (enabled) {
-      resumePassThroughRef.current = true
-    }
-  }
 
   const triggerLimitWarning = (kind: 'session' | 'memo') => {
     if (limitWarningTimerRef.current !== null) {
@@ -344,7 +342,7 @@ function OverlayApp() {
     const currentSessions = sessionsRef.current
     const result = createSession(1, currentSessions)
 
-    markResumePassThrough(payload.resumePassThrough)
+    setPassThroughWanted(payload.resumePassThrough)
     setIsSessionPickerVisible(false)
     setContextMenu(null)
 
@@ -360,7 +358,7 @@ function OverlayApp() {
   })
 
   const handleOpenPickerEvent = useEffectEvent((payload: OverlayResumePayload) => {
-    markResumePassThrough(payload.resumePassThrough)
+    setPassThroughWanted(payload.resumePassThrough)
     setIsSessionPickerVisible(true)
     setSelection({ type: 'none' })
   })
@@ -368,6 +366,20 @@ function OverlayApp() {
   const handleOverlayClickthroughEvent = useEffectEvent((enabled: boolean) => {
     setClickThrough(enabled)
     setOverlayInputMode(enabled ? 'pass-through' : 'interactive')
+  })
+
+  const clearInteractiveUi = useEffectEvent(() => {
+    setContextMenu(null)
+    setDeleteConfirm(null)
+    setIsSessionPickerVisible(false)
+    setSelection({ type: 'none' })
+  })
+
+  const handleManualOverlayToggleEvent = useEffectEvent((enabled: boolean) => {
+    if (enabled) {
+      clearInteractiveUi()
+    }
+    setPassThroughWanted(enabled)
   })
 
   const handleReopenSessionEvent = useEffectEvent(async (sessionId: string) => {
@@ -416,6 +428,9 @@ function OverlayApp() {
       listen<{ sessionId: string }>('session://reopen', (event) => {
         void handleReopenSessionEvent(event.payload.sessionId)
       }),
+      listen<boolean>('overlay://manual-toggle', (event) => {
+        handleManualOverlayToggleEvent(event.payload)
+      }),
       listen<boolean>('overlay://clickthrough', (event) => {
         handleOverlayClickthroughEvent(event.payload)
       }),
@@ -435,30 +450,20 @@ function OverlayApp() {
       deleteConfirm !== null ||
       isSessionPickerVisible
 
-    if (needsInteractive && overlayInputMode !== 'interactive') {
-      if (overlayInputMode === 'pass-through') {
-        resumePassThroughRef.current = true
-      }
-      void applyOverlayInputMode('interactive')
-      return
-    }
+    const desiredMode =
+      !needsInteractive && passThroughWanted ? 'pass-through' : 'interactive'
 
-    if (
-      !needsInteractive &&
-      resumePassThroughRef.current &&
-      overlayInputMode === 'interactive' &&
-      selection.type === 'none'
-    ) {
-      resumePassThroughRef.current = false
-      void applyOverlayInputMode('pass-through')
+    if (overlayInputMode !== desiredMode) {
+      void applyOverlayInputMode(desiredMode)
     }
   }, [
     contextMenu,
     deleteConfirm,
     isSessionPickerVisible,
     overlayInputMode,
-    selection.type,
     applyOverlayInputMode,
+    passThroughWanted,
+    selection.type,
   ])
 
   useEffect(() => {
@@ -712,11 +717,10 @@ function OverlayApp() {
     }
 
     if (selectedEntry && (event.key === 'Delete' || event.key === 'Backspace')) {
-      if (selectedEntry.memo.isPinned) return
-      event.preventDefault()
-      markResumePassThrough()
-      setDeleteConfirm({ type: 'memo', sessionId: selectedEntry.session.id, memoId: selectedEntry.memo.id })
-      return
+          if (selectedEntry.memo.isPinned) return
+          event.preventDefault()
+          setDeleteConfirm({ type: 'memo', sessionId: selectedEntry.session.id, memoId: selectedEntry.memo.id })
+          return
     }
 
     if (selection.type === 'session') {
@@ -740,7 +744,6 @@ function OverlayApp() {
           const hasPinned = targetSession.memos.some((m) => m.isVisible && m.isPinned)
           if (hasPinned) return
           event.preventDefault()
-          markResumePassThrough()
           setDeleteConfirm({ type: 'session', sessionId })
           return
         }
@@ -779,7 +782,6 @@ function OverlayApp() {
     if (selection.type === 'memo' && event.key === 'Enter') {
       const { sessionId, memoId } = selection
       event.preventDefault()
-      markResumePassThrough()
       setSessions((currentSessions) => incrementMemoEditingKey(currentSessions, sessionId, memoId))
       setSelection({ type: 'editing', sessionId, memoId })
     }
@@ -1191,9 +1193,7 @@ function OverlayApp() {
         aria-pressed={clickThrough}
         aria-label={`Overlay mode: ${overlayModeLabel}`}
         onClick={() => {
-          const nextMode =
-            overlayInputMode === 'interactive' ? 'pass-through' : 'interactive'
-          void applyOverlayInputMode(nextMode)
+          setPassThroughWanted((current) => !current)
         }}
       >
         <span className="overlay-mode-toggle__dot" />

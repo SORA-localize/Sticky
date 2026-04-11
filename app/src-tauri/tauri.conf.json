@@ -15,15 +15,15 @@
       {
         "label": "main",
         "title": "sticky",
-        "width": 1440,
-        "height": 900,
-        "resizable": true,
+        "width": 1,
+        "height": 1,
+        "resizable": false,
         "transparent": true,
-        "alwaysOnTop": true,
+        "alwaysOnTop": false,
         "decorations": false,
-        "visibleOnAllWorkspaces": true,
+        "visibleOnAllWorkspaces": false,
         "skipTaskbar": true,
-        "acceptFirstMouse": true
+        "acceptFirstMouse": false
       }
     ],
     "security": {
