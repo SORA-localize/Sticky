@@ -77,6 +77,7 @@
 必要なこと:
 
 - 非操作時に背景へクリックを通す
+- through 状態でもメモへ即アクセスできる
 - メモ操作時は sticky が入力を受ける
 - 編集終了やメニュー終了後に透過状態へ戻せる
 
@@ -107,6 +108,7 @@ sticky 本体の理想挙動は以下。
 
 - `常に最前面` ではある
 - `常に入力を奪う` ではない
+- `through でもメモには直接触れられる` を成立条件にする
 
 ---
 
@@ -135,17 +137,63 @@ sticky 本体の理想挙動は以下。
 
 本番 click-through は、少なくとも以下の状態を持つ前提で考える。
 
+### 7-0. レイヤー分離
+
+本計画では、入力モードを以下の 2 レイヤーに分けて扱う。
+
+1. Tauri / OS レイヤー
+- `set_ignore_cursor_events(true/false)` による window 全体の入力透過
+- ここで切り替わるのは `window が OS から pointer event を受け取るかどうか` のみ
+
+2. React / UI レイヤー
+- `selection`, `editing`, `picker`, `delete confirm`, `context menu`
+- ここで切り替わるのは `sticky 内で何を選択し、何を編集中か` のみ
+
+原則:
+
+- `Pass-Through` だけが Tauri / OS レイヤーを直接変更する
+- `Interactive / Editing / Modal` は、Tauri 的には `through=false` の上で動く React 側の操作状態として扱う
+- `Tauri への命令` と `React state の更新` を混同しない
+
+### 7-1. C1a / C1b で採用した実装方式
+
+現時点で成立している方式は以下。
+
+- `set_ignore_cursor_events(true)` にすると、window 全体が pointer event を受け取らなくなる
+- `set_ignore_cursor_events(false)` にすると、sticky 全体が通常どおり入力を受け取る
+- `Cmd + Option + /` と明示トグル UI は、この `window 全体 on/off` を切り替えている
+- picker / session open / delete confirm / editing は、必要に応じて `through=false` へ一時復帰させる補助導線を持つ
+
+重要:
+
+- この方式では `through 中のメモ直接クリック` はまだ成立していない
+- CSS の `pointer-events` は、OS が window に配送した event にしか効かない
+- したがって `set_ignore_cursor_events(true)` のまま `pointer-events: auto` だけでメモカードを拾える前提は置かない
+
+### 7-2. C2 で検証する仮説
+
+`C2` で本当に確認すべきことは以下。
+
+- `through 中でもメモカードの pointerdown を JS が受け取れる別方式があるか`
+- それが無いなら、`window 全体 on/off` 方式では本命 UX に到達できないと判断する
+- その場合は `部分透過の別方式` か `window model の再検討` に進む
+
 ### Mode A: Pass-Through
 
 - 背景クリックを通す
 - sticky は視覚レイヤーとして存在する
 - メモ本体以外は入力を奪わないのが理想
 
-方式仮説:
+現実の実装:
 
-- Tauri 側では window 全体に対して `set_ignore_cursor_events(true/false)` を使う
-- Frontend 側では `.overlay-shell` を `pointer-events: none` 基本に寄せる
-- メモカード、picker、context menu、delete confirm など実際に入力を受ける要素だけ `pointer-events: auto` にする
+- 現在は `set_ignore_cursor_events(true)` による `window 全体透過` で成立している
+- これは背景アプリ操作には有効だが、sticky 側の pointer event も止まる
+
+補足:
+
+- `through 中でもメモカードだけは pointer event を拾えること` が本命 UX の成立条件である
+- これは `C1` で成立した事実ではなく、`C2` で検証すべき仮説である
+- 現在の `window 全体透過 on/off` 方式だけでは、理想 UX に届かない可能性が高い
 
 成立条件:
 
@@ -154,22 +202,26 @@ sticky 本体の理想挙動は以下。
 
 成立しない場合の代替:
 
-- 部分透過が不安定なら、window 全体の click-through on/off を明示モードとして切り替える案へ退避する
+- `window 全体 on/off` を明示モードとして残しつつ、本命 UX は未成立と判定する
+- `through 中のメモ直接選択` が実現できる別方式を検証する
 - それでも UX が破綻する場合は、比較候補として保持している `memo 1 window` 案へフォールバックする
 
 ### Mode B: Interactive
 
+- Tauri / OS 的には `through=false` の上で動く React 側の操作状態である
 - sticky が入力を受ける
 - メモ選択、ドラッグ、リサイズ、右クリックが可能
 
 ### Mode C: Editing
 
+- Tauri / OS 的には `through=false` の上で動く React 側の操作状態である
 - textarea 入力中
 - click-through を無効化
 - 編集中の誤透過を防ぐ
 
 ### Mode D: Modal / Picker
 
+- Tauri / OS 的には `through=false` の上で動く React 側の操作状態である
 - session picker, delete confirm, context menu 表示中
 - sticky が入力を受ける
 - 背景への透過は原則オフ
@@ -230,21 +282,35 @@ Gate:
 - セッション追加ショートカットだけに復帰手段が依存していない
 - ユーザーが現在モードを把握できる
 
+最小 UI:
+
+- 右下の mode toggle を状態表示の最小 UI とする
+- 表示内容は `overlay / through` と、復帰ショートカットのヒントまでに限定する
+- これ以上の mode 表示は `C2` 完了後に必要性を再判断する
+
 ### Phase C2: 実操作に応じた自動遷移
 
 目的:
 
-- メモを触る時だけ sticky が入力を受ける最小導線を作る
+- through 中でもメモへ直接入り、必要時だけ sticky が入力を受ける最小導線を作る
 
 作業:
 
-1. メモ pointer down 前に interactive 化
-2. 編集開始で editing 化
-3. menu / picker / confirm 中は modal 化
-4. 終了時に pass-through 復帰条件を定める
+1. `through 中でもメモカードを直接クリックできるか` を、最小プローブで最優先検証する
+2. メモ click / pointer down を契機に `interactive` へ昇格できる経路を作る
+3. 編集開始で `editing`、menu / picker / confirm 中は `modal` に遷移させる
+4. 操作終了後に `pass-through` へ戻す条件を、手動 `overlay` と混同しない形で定める
+
+補足:
+
+- `through -> メモ直接選択 -> interactive 化` が成立しない限り、click-through 案の UX は不十分とみなす
+- 単に `through` と `overlay` を手動で往復できるだけでは `C2` 完了としない
+- `C2` 着手前に、`through 中のメモ領域 pointerdown が JS に届くか` だけを見る独立プローブを入れる
+- プローブが失敗した場合（pointerdown が届かない）: 作業 #2〜#4 を省略し、C4 NO 分岐へ直接移行する
 
 Gate:
 
+- through 中でもメモへ違和感なく直接入れる
 - 背景アプリと自然に行き来できる
 - sticky の主要操作が壊れない
 
@@ -275,6 +341,7 @@ Gate:
 1. YES:
    - `canvas 維持 + 本番 click-through` を本命案として継続する
    - 次フェーズで `selection / editing / picker / delete confirm` を本番入力モードへ統合する
+   - 仮称計画書: `plans/clickthrough-phase-c3-followup.md`
 2. NO:
    - click-through 本命案は比較結果として保存する
    - `feature_window_model_redesign` に残した `memo 1 window` 案または別の通常 window 案へ移行する
@@ -290,7 +357,8 @@ Gate:
 この計画全体の Gate 条件:
 
 - 背景アプリ本体をタイトルバー経由なしで自然にクリックできる
-- sticky 側のメモ操作へ違和感なく戻れる
+- through 中でもメモを直接選択できる
+- sticky 側のメモ操作へ違和感なく入れる
 - canvas / session UX を維持できる
 - 既存 selection / editing / picker / delete confirm を壊さない
 
@@ -307,7 +375,7 @@ Gate:
 手動確認:
 
 - 背景アプリ本体クリック
-- メモ選択
+- through 中のメモ直接選択
 - ドラッグ / リサイズ
 - 編集開始 / 編集終了
 - context menu
@@ -337,10 +405,10 @@ Gate:
 
 ### 検査A: Issue → Phase 対応
 
-- `T-20` → `Phase C1`, `Phase C2`
+- `T-20` → `Phase C1a`, `Phase C1b`, `Phase C2`
 - `U-20` → `Phase C2`, `Phase C3`
 - `S-20` → `Phase C0`, `Phase C2`
-- `T-21` → `Phase C1`, `Phase C2`
+- `T-21` → `Phase C1a`, `Phase C2`
 
 確認:
 
@@ -354,15 +422,21 @@ Gate:
 - `要件定義.md` を確認した
 - `画面一覧_状態遷移_DBスキーマ案.md` の状態遷移と矛盾しないよう、入力モードを既存 state の上位概念として扱う方針を明記した
 - `操作一覧表.md` と整合するよう、selection / editing / picker / delete confirm を壊さないことを Gate に入れた
+- `through 中でもメモへ直接入れる` という UX 要求を C2 の成立条件として明記した
+- 入力モードを `Tauri / OS レイヤー` と `React / UI レイヤー` に分けて扱うことを明記した
 
 ### 検査C: DRY / KISS
 
-- click-through の実現方式は `Tauri 全体透過 + CSS の入力対象限定` を第一仮説に絞った
+- `C1` で成立した事実と `C2` で検証すべき仮説を分離した
+- `Tauri 全体透過 + CSS だけで部分透過が成立する` という誤前提を除去した
 - 状態は `Pass-Through / Interactive / Editing / Modal` の 4 つに限定し、過剰な分岐を増やしていない
 - 成立しない場合の代替として `window 全体 on/off` と `memo 1 window` フォールバックを明記した
+- 手動トグルだけで済ませず、`through -> メモ直接選択` を本命 UX の必須条件として切り分けた
 
 ---
 
 ## 13. 変更履歴
 
 - 2026-04-09: 初版作成
+- 2026-04-10: `C2` の中心要求を `through 中のメモ直接選択` に明確化し、`C1a/C1b` 分割後の対応表を修正
+- 2026-04-10: `C1` の実装方式、Tauri / React の責務分離、`C2` 前の独立プローブ要件を追記
