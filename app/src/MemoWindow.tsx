@@ -39,20 +39,20 @@ function MemoWindow() {
   return (
     <main className="memo-window-shell">
       <article className="memo-window-card">
-        <header
-          className="memo-window-card__header"
-          onPointerDown={() => {
-            void appWindow.startDragging()
-          }}
-        >
-          <div>
+        <header className="memo-window-card__header">
+          <div className="memo-window-card__title-block" data-tauri-drag-region>
             <p className="memo-window-card__eyebrow">sticky memo</p>
             <h1 className="memo-window-card__title">{memoId}</h1>
+            <p className="memo-window-card__hint">Drag here to move</p>
           </div>
           <div className="memo-window-card__actions">
             <button
               type="button"
               className={`memo-window-card__action ${isPinned ? 'memo-window-card__action--active' : ''}`}
+              aria-pressed={isPinned}
+              onPointerDown={(event) => {
+                event.stopPropagation()
+              }}
               onClick={(event) => {
                 event.stopPropagation()
                 void togglePin()
@@ -63,6 +63,9 @@ function MemoWindow() {
             <button
               type="button"
               className="memo-window-card__action"
+              onPointerDown={(event) => {
+                event.stopPropagation()
+              }}
               onClick={(event) => {
                 event.stopPropagation()
                 void appWindow.close()
