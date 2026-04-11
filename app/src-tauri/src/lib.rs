@@ -9,6 +9,28 @@ use tauri::{PhysicalPosition, PhysicalSize};
 use serde::Serialize;
 #[cfg(desktop)]
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+#[cfg(desktop)]
+use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
+
+// ---- Tray State ----
+
+#[cfg(desktop)]
+struct TrayState(tauri::tray::TrayIcon);
+
+#[cfg(desktop)]
+fn update_tray(tray: &tauri::tray::TrayIcon, is_through: bool) {
+    let icon_bytes: &[u8] = if is_through {
+        include_bytes!("../icons/tray-through.png")
+    } else {
+        include_bytes!("../icons/tray-overlay.png")
+    };
+    let tooltip = if is_through { "sticky — through" } else { "sticky — overlay" };
+    if let Ok(icon) = tauri::image::Image::from_bytes(icon_bytes) {
+        let _ = tray.set_icon(Some(icon));
+        let _ = tray.set_icon_as_template(true);
+    }
+    let _ = tray.set_tooltip(Some(tooltip));
+}
 
 // ---- DB State ----
 
@@ -298,11 +320,39 @@ fn trash_memo(state: tauri::State<DbState>, memo_id: String) -> Result<(), Strin
     Ok(())
 }
 
+#[cfg(desktop)]
+#[tauri::command]
+fn set_overlay_input_mode(
+    app: tauri::AppHandle,
+    mode: String,
+) -> Result<bool, String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+
+    let enabled = mode == "pass-through";
+    if let Some(state) = app.try_state::<OverlayState>() {
+        let _ = state.set_clickthrough(enabled);
+    }
+    window
+        .set_ignore_cursor_events(enabled)
+        .map_err(|e| e.to_string())?;
+    app.emit("overlay://clickthrough", enabled)
+        .map_err(|e| e.to_string())?;
+    if let Some(tray) = app.try_state::<TrayState>() {
+        update_tray(&tray.0, enabled);
+    }
+    Ok(enabled)
+}
+
 // ---- App entry ----
 
 #[cfg(desktop)]
 #[derive(Clone, Copy, Serialize)]
-struct PickerOpenPayload;
+#[serde(rename_all = "camelCase")]
+struct OverlayResumePayload {
+    resume_pass_through: bool,
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -327,6 +377,7 @@ pub fn run() {
             close_session,
             trash_session,
             trash_memo,
+            set_overlay_input_mode,
         ])
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -344,20 +395,43 @@ pub fn run() {
                         };
 
                         if shortcut == &open_single_session {
+                            let resume_pass_through = window
+                                .state::<OverlayState>()
+                                .is_clickthrough()
+                                .unwrap_or(false);
+                            let _ = window.state::<OverlayState>().set_clickthrough(false);
+                            let _ = window.set_ignore_cursor_events(false);
+                            let _ = app.emit("overlay://clickthrough", false);
                             let _ = window.show();
                             let _ = window.set_focus();
-                            let _ = app.emit("session://open-single", true);
+                            let _ = app.emit(
+                                "session://open-single",
+                                OverlayResumePayload {
+                                    resume_pass_through,
+                                },
+                            );
                             return;
                         }
 
                         if shortcut == &open_session_picker {
+                            let resume_pass_through = window
+                                .state::<OverlayState>()
+                                .is_clickthrough()
+                                .unwrap_or(false);
+                            let _ = window.state::<OverlayState>().set_clickthrough(false);
+                            let _ = window.set_ignore_cursor_events(false);
+                            let _ = app.emit("overlay://clickthrough", false);
                             let _ = window.show();
                             let _ = window.set_focus();
-                            let _ = app.emit("session://open-picker", PickerOpenPayload);
+                            let _ = app.emit(
+                                "session://open-picker",
+                                OverlayResumePayload {
+                                    resume_pass_through,
+                                },
+                            );
                             return;
                         }
 
-                        #[cfg(debug_assertions)]
                         if shortcut == &toggle_clickthrough {
                             let enabled = window
                                 .state::<OverlayState>()
@@ -366,6 +440,13 @@ pub fn run() {
 
                             let _ = window.set_ignore_cursor_events(enabled);
                             let _ = app.emit("overlay://clickthrough", enabled);
+                            if let Some(tray) = app.try_state::<TrayState>() {
+                                update_tray(&tray.0, enabled);
+                            }
+                            if !enabled {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
                         }
                     }
                 })
@@ -437,8 +518,40 @@ pub fn run() {
 
                     app.global_shortcut().register(open_single_session)?;
                     app.global_shortcut().register(open_session_picker)?;
-                    #[cfg(debug_assertions)]
                     app.global_shortcut().register(toggle_clickthrough)?;
+
+                    // メニューバー トレイアイコン
+                    let tray = TrayIconBuilder::new()
+                        .icon(tauri::image::Image::from_bytes(
+                            include_bytes!("../icons/tray-overlay.png"),
+                        )?)
+                        .icon_as_template(true)
+                        .tooltip("sticky — overlay")
+                        .on_tray_icon_event(|tray: &tauri::tray::TrayIcon, event| {
+                            if let TrayIconEvent::Click {
+                                button: MouseButton::Left,
+                                ..
+                            } = event
+                            {
+                                let app = tray.app_handle();
+                                let Some(window) = app.get_webview_window("main") else {
+                                    return;
+                                };
+                                let enabled: bool = window
+                                    .state::<OverlayState>()
+                                    .toggle_clickthrough()
+                                    .unwrap_or(false);
+                                let _ = window.set_ignore_cursor_events(enabled);
+                                let _ = app.emit("overlay://clickthrough", enabled);
+                                update_tray(tray, enabled);
+                                if !enabled {
+                                    let _ = window.show();
+                                    let _ = window.set_focus();
+                                }
+                            }
+                        })
+                        .build(app)?;
+                    app.manage(TrayState(tray));
                 }
 
                 if cfg!(debug_assertions) {
@@ -467,6 +580,23 @@ impl OverlayState {
             .lock()
             .map_err(|_| "failed to lock overlay state".to_string())?;
         *state = !*state;
+        Ok(*state)
+    }
+
+    fn set_clickthrough(&self, enabled: bool) -> Result<(), String> {
+        let mut state = self
+            .0
+            .lock()
+            .map_err(|_| "failed to lock overlay state".to_string())?;
+        *state = enabled;
+        Ok(())
+    }
+
+    fn is_clickthrough(&self) -> Result<bool, String> {
+        let state = self
+            .0
+            .lock()
+            .map_err(|_| "failed to lock overlay state".to_string())?;
         Ok(*state)
     }
 }
